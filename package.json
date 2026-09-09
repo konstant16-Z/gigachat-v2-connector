@@ -1,0 +1,31 @@
+{
+  "name": "gigachat-v2-connector",
+  "version": "2.0.0",
+  "description": "OpenCode V2 plugin (GigaCodeConnector) for GigaChat API by SberCloud, with parallel multi-tool-call support.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "license": "MIT",
+  "scripts": {
+    "build": "bun build ./src/v2/index.ts --outfile=./dist/index.js --target=bun",
+    "typecheck": "tsc --noEmit",
+    "dev": "bun run ./src/v2/index.ts"
+  },
+  "dependencies": {
+    "axios": "^1.7.9",
+    "form-data": "^4.0.1",
+    "uuid": "^11.0.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.2"
+  },
+  "keywords": [
+    "opencode",
+    "gigachat",
+    "gigacode",
+    "sbercloud",
+    "plugin",
+    "openai-compatible"
+  ]
+}

@@ -1,0 +1,41 @@
+/**
+ * Constants and logging helpers.
+ * Mirrors the top of the original bundle (src/v2/index.ts).
+ */
+import * as os from "node:os";
+import * as path from "node:path";
+
+/** GigaChat OAuth2 token endpoint */
+export const GIGACHAT_OAUTH_URL = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth";
+/** GigaChat Chat Completions endpoint */
+export const GIGACHAT_COMPLETIONS_URL = "https://gigachat.devices.sberbank.ru/api/v1/chat/completions";
+/** GigaChat Files (attachments) endpoint */
+export const GIGACHAT_FILES_URL = "https://ngw.devices.sberbank.ru:9443/api/v2/files";
+
+/** OpenCode shared config directory */
+export const CONFIG_DIR = path.join(os.homedir(), ".config", "opencode");
+/** Default path to the Russian Trusted Root CA PEM file */
+export const DEFAULT_CA_BUNDLE_FILE = path.join(CONFIG_DIR, "certs", "russian_trusted_root_ca.pem");
+
+/** Refresh the OAuth token this many seconds before it actually expires */
+export const REFRESH_BUFFER_SECONDS = 300;
+
+export function debugEnabled(): boolean {
+  return process.env.GIGACHAT_DEBUG === "true" || process.env.OPENCODE_DEBUG === "true";
+}
+
+export function log(message: string, metadata?: unknown): void {
+  if (!debugEnabled()) return;
+  const meta = metadata !== undefined ? ` ${JSON.stringify(metadata)}` : "";
+  console.log(`[GigaCode] [INFO] ${message}${meta}`);
+}
+
+export function warn(message: string, metadata?: unknown): void {
+  const meta = metadata !== undefined ? ` ${JSON.stringify(metadata)}` : "";
+  console.warn(`[GigaCode] [WARN] ${message}${meta}`);
+}
+
+export function error(message: string, metadata?: unknown): void {
+  const meta = metadata !== undefined ? ` ${JSON.stringify(metadata)}` : "";
+  console.error(`[GigaCode] [ERROR] ${message}${meta}`);
+}
