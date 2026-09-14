@@ -1,7 +1,7 @@
 {
   "name": "gigachat-v2-connector",
   "version": "2.0.0",
-  "description": "OpenCode V2 plugin (GigaCodeConnector) for GigaChat API by SberCloud, with parallel multi-tool-call support.",
+  "description": "Port of Overman775/opencode-gigachat-plugin v1.0.0 to OpenCode V2 (GigaChat API by SberCloud), with parallel multi-tool-call support.",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

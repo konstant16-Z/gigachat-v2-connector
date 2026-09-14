@@ -1,12 +1,34 @@
 # gigachat-v2-connector
 
-Читаемые TypeScript-исходники плагина OpenCode V2 «GigaChat Connector»
-(ранее существовал только как собранный Bun-бандл
-`~/.opencode/v2-plugins/gigachat-plugin/index.js`).
+**Порт на OpenCode V2** плагина
+[opencode-gigachat-plugin v1.0.0](https://github.com/Overman775/opencode-gigachat-plugin/releases/tag/v1.0.0)
+(автор — [Overman775](https://github.com/Overman775)) — интеграция GigaChat/GigaCode
+экосистемы Сбера для [OpenCode](https://github.com/anomalyco/opencode).
 
-Исходники восстановлены из бандла 1:1: весь код перенесён без изменения
-поведения, включая **фикс параллельных tool-calls** (спаривание
-`assistant function_call` + `function` по call-id).
+Оригинал — плагин для **OpenCode V1** (поставляется как собранный JS-бандл,
+`~/.opencode/v1-plugins/gigachat-plugin.js`). Данный репозиторий — читаемые
+TypeScript-исходники его **порта на OpenCode V2**: код реконструирован из
+бандла 1:1 и адаптирован под контракт плагинов V2 (хуки `http.request` /
+`http.response` / `tool.execute.before`), без изменения поведения, включая
+**фикс параллельных tool-calls** (спаривание `assistant function_call` +
+`function` по `call-id`).
+
+Оригинал: <https://github.com/Overman775/opencode-gigachat-plugin>
+
+## Возможности (наследуются от оригинала v1.0.0)
+
+- **Трансляция протоколов OpenAI ↔ GigaChat**: перехват запросов к GigaChat,
+  вырезание несовместимых параметров, преобразование `reasoning_effort` /
+  `thinking` в текстовые системные инструкции (Chain-of-Thought);
+- **Гибридный TLS**: встроенный PEM-бандл российского корневого CA (Минцифры)
+  + внешний файл `~/.config/opencode/certs/russian_trusted_root_ca.pem`;
+- **Мультимедиа**: base64 `image_url` → upload в `/files` → `file_id` как
+  `attachment` (Vision/модели Pro/Max);
+- **OAuth 2.0**: кэш JWT, превентивное обновление токена за 5 минут до
+  истечения 30-минутного лимита, семафор от параллельных обновлений;
+- **1-Tool Constraint**: адаптация массива `tools` под ограничение GigaChat
+  «одна функция за запрос»;
+- **Режим V2**: собранный бандл под V2-плагины (`~/.opencode/v2-plugins/...`).
 
 ## Структура
 
