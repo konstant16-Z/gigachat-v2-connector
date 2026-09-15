@@ -18,21 +18,22 @@ describe("normalized-to-gigachat-v2", () => {
     expect(v2.model).toBe("GigaChat-2-Max");
     expect(v2.stream).toBe(false);
 
-    // assistant message: text + function_call
+    // assistant message: text + function_call (arguments object — live API)
     const assistant = v2.messages[2];
     expect(assistant.content).toEqual([
       { text: "I will check the weather service." },
-      { function_call: { name: "get_weather", arguments: '{"city":"Moscow"}' } },
+      { function_call: { name: "get_weather", arguments: { city: "Moscow" } } },
     ]);
 
-    // tool message: function_result with the resolved name
+    // tool message maps to role "function" (live API rejects "tool" with 400)
     const tool = v2.messages[3];
+    expect(tool.role).toBe("function");
     expect(tool.content).toEqual([
       { function_result: { name: "get_weather", result: '{"temp":-5,"unit":"C"}' } },
     ]);
   });
 
-  test("maps tool_state_id when a message carries state", () => {
+  test("maps state to request-side functions_state_id when a message carries it", () => {
     const v2 = normalizedToGigaChatV2({
       model: "GigaChat-2-Max",
       messages: [
@@ -43,7 +44,7 @@ describe("normalized-to-gigachat-v2", () => {
         },
       ],
     });
-    expect(v2.messages[0].tool_state_id).toBe("state-zzz");
+    expect(v2.messages[0].functions_state_id).toBe("state-zzz");
   });
 
   test("maps model_options from normalized sampling params", () => {

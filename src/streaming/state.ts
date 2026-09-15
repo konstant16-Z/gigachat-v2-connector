@@ -141,20 +141,28 @@ export class StreamStateMachine {
     return out;
   }
 
-  /** V2 function_call parts carry no id; sequential stable ids per stream. */
-  private trackCall(name: string, args: string): { callId: string; name: string; args: string } {
+  /**
+   * V2 function_call parts carry no id; sequential stable ids per stream.
+   * Arguments may arrive as an object (live API) or a JSON string
+   * (spec/legacy); the internal model always carries the JSON string.
+   */
+  private trackCall(
+    name: string,
+    args: string | Record<string, unknown>,
+  ): { callId: string; name: string; args: string } {
+    const raw = typeof args === "string" ? args : JSON.stringify(args);
     // A call may be split over several delta parts: extend the pending call of
     // the same name whose arguments are still empty.
     for (const [callId, pending] of this.pendingCalls) {
       if (pending.name === name && pending.args === "") {
-        pending.args = args;
-        return { callId, name, args };
+        pending.args = raw;
+        return { callId, name, args: raw };
       }
     }
     this.callCounter += 1;
     const callId = `call_${this.callCounter}`;
-    this.pendingCalls.set(callId, { name, args });
-    return { callId, name, args };
+    this.pendingCalls.set(callId, { name, args: raw });
+    return { callId, name, args: raw };
   }
 }
 

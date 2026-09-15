@@ -4,15 +4,26 @@
  * No `any`. Content items are *keyed objects without a `type` discriminator*,
  * exactly as the official OpenAPI spec describes them
  * (`docs/external/gigachat-api.yml`, `/v2/chat/completions`).
- * `function_call.arguments` is a **JSON string**, not an object.
+ * `function_call.arguments` is a JSON **string** per the spec, but the live
+ * API (verified 2026-09-15) requires an **object** on the wire; request roles
+ * use `function` for tool results and the request state token is
+ * `functions_state_id`. See `docs/LIVE_API_OBSERVATIONS.md`.
  */
 
 /* ---------------------------------- tools --------------------------------- */
 
 export interface FunctionCallArgs {
+  /** Live API returns an id on function_call responses (spec has none). */
+  id?: string;
   name: string;
-  /** JSON-wrapped string holding the call arguments. */
-  arguments: string;
+  /**
+   * Function call arguments. The live API (2026-09-15) requires an **object**
+   * on the wire — a JSON string is rejected with 400.
+   * `FunctionCallArgs.arguments` is a string per the spec, so the type keeps
+   * both; the request mapper always emits an object and the response path
+   * normalizes either form via `parseToolArguments`.
+   */
+  arguments: Record<string, unknown> | string;
 }
 
 export interface CustomFunction {
@@ -43,7 +54,11 @@ export interface ToolConfig {
 
 /* --------------------------------- requests -------------------------------- */
 
-export type V2MessageRole = "user" | "system" | "assistant" | "tool";
+/**
+ * Request-side roles (live-verified 2026-09-15): function results use role
+ * `function`; a `tool` role is rejected with 400 (spec: FunctionMessage).
+ */
+export type V2RequestMessageRole = "user" | "system" | "assistant" | "function";
 
 /** Content item in a request — keyed object, no `type` discriminator. */
 export interface V2ContentItem {
@@ -55,8 +70,13 @@ export interface V2ContentItem {
 }
 
 export interface V2Message {
-  role: V2MessageRole;
-  tool_state_id?: string;
+  role: V2RequestMessageRole;
+  /**
+   * Request-side tool state token. The live API accepts this as
+   * `functions_state_id` on assistant messages (verified round-trip); the
+   * response side returns the same token as `tool_state_id`.
+   */
+  functions_state_id?: string;
   content: V2ContentItem[];
 }
 
@@ -106,6 +126,9 @@ export type V2FinishReason =
   | "request_filter"
   | "response_blacklist";
 
+/** Response-side roles (spec MessageResponse enum: user/system/assistant/tool). */
+export type V2ResponseMessageRole = "user" | "system" | "assistant" | "tool";
+
 export interface V2ResponseUsage {
   input_tokens: number;
   input_tokens_details?: { cached_tokens: number };
@@ -136,7 +159,14 @@ export interface V2ResponseContentItem {
 
 export interface V2ResponseMessage {
   message_id?: string;
-  role: V2MessageRole;
+  /** Response-side roles (spec MessageResponse enum); live returns assistant. */
+  role: V2ResponseMessageRole;
+  /**
+   * Tool state token on assistant messages. The live API returns it as
+   * `tool_state_id` (verified); the spec names it `tools_state_id` — both are
+   * read at the boundary.
+   */
+  tool_state_id?: string;
   tools_state_id?: string;
   content: V2ResponseContentItem[];
 }

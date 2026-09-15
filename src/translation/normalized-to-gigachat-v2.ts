@@ -2,12 +2,14 @@
  * Normalized model → GigaChat V2 request (agents.md RULE 13: no silent
  * translation; unsupported values raise controlled errors instead of guesses).
  *
- * Key points per the official spec (docs/external/gigachat-api.yml):
+ * Key points per the official spec (docs/external/gigachat-api.yml) and live
+ * API observations (docs/LIVE_API_OBSERVATIONS.md, 2026-09-15):
  * - content items are keyed objects WITHOUT a `type` discriminator;
- * - `function_call.arguments` is a JSON **string**;
- * - tool results map to `function_result {name, result}`;
+ * - tool results map to role `function` with `function_result {name, result}`;
+ * - `function_call.arguments` is an **object** on the wire (live API rejects
+ *   a JSON string with 400, despite the spec typing it as string);
  * - `tool_choice none|auto|forced` maps to `tool_config.mode`;
- * - request tool state maps to `tool_state_id`.
+ * - request tool state maps to `functions_state_id` (assistant message).
  */
 import type {
   NormalizedMessage,
@@ -48,8 +50,10 @@ export function normalizedToGigaChatV2(norm: NormalizedRequest): ChatCompletionV
 }
 
 function toV2Message(m: NormalizedMessage, priorMessages: NormalizedMessage[]): V2Message {
-  const v2: V2Message = { role: m.role, content: [] };
-  if (m.stateId) v2.tool_state_id = m.stateId;
+  // Live API request roles: tool results use `function`; a `tool` role is
+  // rejected with 400 (spec: FunctionMessage). Other roles pass through.
+  const v2: V2Message = { role: m.role === "tool" ? "function" : m.role, content: [] };
+  if (m.stateId) v2.functions_state_id = m.stateId;
   // Tool identity invariant (plan §10): tool_1 → result_1. Resolve and verify
   // all tool results of this message against prior assistant calls BEFORE
   // emitting content, so orphan/duplicate results fail as controlled errors.
@@ -106,14 +110,11 @@ function toV2Message(m: NormalizedMessage, priorMessages: NormalizedMessage[]): 
   }
   for (const call of m.toolCalls ?? []) {
     v2.content.push({
-      function_call: { name: call.name, arguments: stringifyArguments(call.arguments) },
+      // Live API requires arguments as an object (a JSON string → 400).
+      function_call: { name: call.name, arguments: call.arguments ?? {} },
     });
   }
   return v2;
-}
-
-function stringifyArguments(args: Record<string, unknown> | undefined): string {
-  return JSON.stringify(args ?? {});
 }
 
 function toModelOptions(norm: NormalizedRequest): ModelOptions | undefined {

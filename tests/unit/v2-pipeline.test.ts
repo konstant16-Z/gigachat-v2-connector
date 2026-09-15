@@ -36,23 +36,27 @@ describe("createV2Pipeline.chatRequest", () => {
     expect(v2.model).toBe("GigaChat-2-Max");
     expect(v2.messages[0].role).toBe("system");
     expect(v2.messages[2].content).toContainEqual({
-      function_call: { name: "get_weather", arguments: '{"city":"Moscow"}' },
+      function_call: { name: "get_weather", arguments: { city: "Moscow" } },
     });
   });
 
-  test("session tools_state_id is injected when the store has one", () => {
+  test("session functions_state_id is injected when the store has one", () => {
     const pipeline = createV2Pipeline();
     pipeline.store.capture("s-1", "state-live");
     const v2 = pipeline.chatRequest(basicChatRequest, "s-1");
     const assistant = v2.messages.filter((m) => m.role === "assistant");
-    expect(assistant.at(-1)?.tool_state_id).toBe("state-live");
+    expect(assistant.at(-1)?.functions_state_id).toBe("state-live");
   });
 
   test("sessions never mix state", () => {
     const pipeline = createV2Pipeline();
     pipeline.store.capture("A", "state-A");
-    expect(pipeline.chatRequest(basicChatRequest, "A").messages[2].tool_state_id).toBe("state-A");
-    expect(pipeline.chatRequest(basicChatRequest, "B").messages[2].tool_state_id).toBeUndefined();
+    expect(pipeline.chatRequest(basicChatRequest, "A").messages[2].functions_state_id).toBe(
+      "state-A",
+    );
+    expect(
+      pipeline.chatRequest(basicChatRequest, "B").messages[2].functions_state_id,
+    ).toBeUndefined();
   });
 });
 
