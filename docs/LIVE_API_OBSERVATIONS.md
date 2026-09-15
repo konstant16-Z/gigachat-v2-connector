@@ -155,6 +155,8 @@ data: {"model":"GigaChat-2-Max:2.0.30.01","created_at":1789498413,"finish_reason
 
 Т.е. state-токен — это (опциональный) усилитель связности, а не обязательное условие round-trip; объектные `arguments` достаточны. Маппер всё равно передаёт `functions_state_id`, когда state есть (консервативно, и это не мешает).
 
+**End-to-end (сквозь наш маппер):** `scripts/probe-live-roundtrip.ts` гоняет OpenAI-тело через `openCodeToNormalized → normalizedToGigaChatV2` → live → `gigachatV2ToNormalized` → turn-2 из нормализованного ответа. Подтверждено: `tool_state_id`→`stateId`, `function_call.id` сохраняется, объект-arguments парсится, роли turn-2 `user,assistant,function,user`, ответ 200 `finish="stop"`.
+
 ---
 
 ## 6. Валидация имён функций
