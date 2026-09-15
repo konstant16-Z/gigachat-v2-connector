@@ -53,7 +53,7 @@ OAuth: `https://ngw.devices.sberbank.ru:9443/api/v2/oauth` (см. `GIGACHAT_OAUT
 | text content у user/assistant | массив `[{text}]` принимается (200) | ок для нашего маппера |
 | `function_call.arguments` | **только объект** (JSON-объект); строка → 400 | критично |
 | `function_call.id` на request | **необязателен**: и с id, и без id → 200 | ок |
-| `functions_state_id` | принимается; реальный `tool_state_id` из ответа turn1 работает (200); синтетический UUID тоже 200 | ок |
+| `functions_state_id` | принимается; реальный `tool_state_id` из ответа turn1 работает (200); синтетический UUID тоже 200; **не обязателен** — turn-2 без state + объект-arguments → 200 (зонд `probe-state-mandatory.ts`) | ок |
 | `function_result` | массив `[{function_result:{name,result}}]` → 200; без `name` → 400 | ок (name обязателен) |
 | «строгий» FunctionMessage (content строкой) | 400 | спека не совпадает с live |
 
@@ -145,9 +145,15 @@ data: {"model":"GigaChat-2-Max:2.0.30.01","created_at":1789498413,"finish_reason
 | `function_call.arguments` строкой | 400 (всегда) |
 | `function_result` без `name` | 400 |
 
-Открытые вопросы (зонды на дозапуск при фиксе):
-- Обязателен ли `functions_state_id`, если `function_call.arguments` — объект, но state не передаётся? (не проверено в чистом виде — в рабочих вариантах state был)
-- Принимает ли request-поле `tool_state_id` как алиас `functions_state_id`? (мы используем `functions_state_id`)
+Открытые вопросы — **закрыты зондом 2026-09-15** (`scripts/probe-state-mandatory.ts`):
+
+| Вопрос | Результат |
+|---|---|
+| Обязателен ли `functions_state_id` на turn-2 при объектных `arguments`? | **Нет**: turn-2 без state-поля + объект-arguments → 200, `finish_reason:"stop"` |
+| Обязателен ли `function_call.id`? | **Нет**: без id + объект → 200 |
+| Принимает ли request-поле `tool_state_id` как алиас `functions_state_id`? | **Да**: эквивалентно → 200 |
+
+Т.е. state-токен — это (опциональный) усилитель связности, а не обязательное условие round-trip; объектные `arguments` достаточны. Маппер всё равно передаёт `functions_state_id`, когда state есть (консервативно, и это не мешает).
 
 ---
 
