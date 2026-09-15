@@ -42,6 +42,9 @@ export class StreamStateMachine {
   /** Last file ids seen in deltas (kept for the aggregated message; PHASE 7). */
   public lastFileIds: string[] = [];
 
+  /** Latest `tools_state_id` from `response.message.done` (PHASE 4 capture). */
+  public lastToolsStateId: string | undefined;
+
   /** Feed a classified stream event; returns zero or more internal events. */
   push(event: GigaChatStreamEvent): InternalStreamEvent[] {
     if (this.doneEmitted) return [];
@@ -110,6 +113,7 @@ export class StreamStateMachine {
 
   private onDone(p: StreamMessagePayload): InternalStreamEvent[] {
     const out: InternalStreamEvent[] = [];
+    if (p.tools_state_id !== undefined) this.lastToolsStateId = p.tools_state_id;
     if (!this.usageEmitted && p.usage !== undefined) {
       out.push({ kind: "usage", usage: toNormalizedUsage(p.usage) });
       this.usageEmitted = true;
