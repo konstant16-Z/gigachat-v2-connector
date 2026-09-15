@@ -18,8 +18,8 @@ Statuses follow the definitions from the plan:
 | Streaming (SSE) | SSE via `makeSseTransformer` (passthrough malformed, `[DONE]` passthrough) | SSE with events `response.message.delta`, `response.message.done`, `response.tool.in_progress`, `response.tool.completed`; no `[DONE]` | `PARTIAL` | Mapping layer delivered (`src/streaming/`, unit-tested); plugin wiring pending — see "Mapping implementation status" below. |
 | Function tools | `functions` + `function_call` (top‑level) | `tools` array (oneOf) + `tool_config.mode` + `functions` inside `ToolsFunctions` | `MIGRATE` | Structure changed; need to wrap/declare functions differently. |
 | Parallel tools | `pendingCalls` pairs (assistant + function) | Same semantics (V2 does not forbid parallel tool calls) – relies on correct pairing via `tool_state_id`/`message.id` | `SUPPORTED` (current) | The fix for parallel tool calls is already in the connector (see `translator.ts`). No V2 change required for pairing logic. |
-| Tool state | `functions_state_id` (verbatim passthrough) | `tool_state_id` (on request & response messages) | `MIGRATE` | Rename and move from top‑level field to `message.tool_state_id`; must store per‑conversation. |
-| Tool IDs | SSE: stable per‑stream IDs; JSON: fresh `call_<uuid>` | V2 `function_call` parts carry **no id** (spec): streaming assigns stable sequential ids (`call_1`, …) per stream; JSON response generates ids at the boundary; linking tool→result relies on `tools_state_id` | `MIGRATE` | Confirmed 2026-09-15: no `id` on V2 function_call. Streaming ids stable + unit-tested (`tests/unit/streaming-state.test.ts`). |
+| Tool state | `functions_state_id` (verbatim passthrough) | `tool_state_id` (on request & response messages) | `MIGRATE` | Rename and move from top‑level field to `message.tool_state_id`; must store per‑conversation — session store delivered (see "PHASE 4" below). |
+| Tool IDs | SSE: stable per‑stream IDs; JSON: fresh `call_<uuid>` | V2 `function_call` parts carry **no id** (spec): streaming assigns stable sequential ids (`call_1`, …) per stream; JSON response generates ids at the boundary; linking tool→result relies on `tools_state_id` | `MIGRATE` | Confirmed 2026-09-15: no `id` on V2 function_call. Streaming ids stable + unit-tested (`tests/unit/streaming-state.test.ts`). Identity invariance (`tool_1 → result_1`) enforced by `verifyToolLinkage` (see "PHASE 4" below). |
 | Reasoning | `reasoning_effort`/`thinking` → CoT system prompt | No explicit reasoning field; reasoning likely controlled via model selection (e.g., `GigaChat-3-Ultra` for reasoning) | `MIGRATE` | Remove CoT prompts; rely on model choice. |
 | Structured output | `response_format: {type:"json"|"json_schema"}` (only if no tools) | `model_options.response_format` (same structure) | `MIGRATE` | Move from top level to `model_options`. |
 | Vision (images) | base64 → upload to `/api/v2/files` → `attachments: [file_id]` | `content.files` with `id` (presumably pre‑uploaded); base64 still needs upload step | `PARTIAL` | Upload logic likely unchanged; only destination of `id` changes (from `attachments` to `content.files`). |
@@ -33,7 +33,7 @@ Statuses follow the definitions from the plan:
 | Errors | JSON `error.message`, SSE passthrough | Structured error fields? (spec shows same JSON error shape) | `PARTIAL` | Need to verify error format matches; currently pass‑through may be acceptable. |
 | Retry | none (except implicit 401 → refresh + retry once) | 429/5xx with backoff, 400/403 no retry, 401 refresh + one retry | `UNSUPPORTED` | Must add retry/backoff logic. |
 | Cancellation | `reader.cancel` in SSE transformer | supported (same) | `SUPPORTED` | Current implementation already respects cancellation. |
-| Concurrency | OAuth refresh de‑duplicated (`refreshPromise`); `toolRegistry` global counter | `tool_state_id` scoped per conversation; `toolRegistry` must be session‑scoped or replaced | `MIGRATE` | `toolRegistry` uses global maps – potential cross‑talk. Need to scope to session or use per‑conversation state. |
+| Concurrency | OAuth refresh de‑duplicated (`refreshPromise`); `toolRegistry` global counter | `tool_state_id` scoped per conversation; `toolRegistry` must be session‑scoped or replaced | `MIGRATE` | Session‑scoped replacement delivered: `ToolNameRegistry` (`src/gigachat/v2/tools/normalize.ts`) — one instance per session, no module‑level mutable state; legacy global maps untouched until V2 integration. |
 | Logs / observability | `log/warn/error` via `constants.ts` (debug‑gated) | Should add request‑ID, latency, etc. (see agents.md observability) | `UNSUPPORTED` | Enhance logging per agents.md. |
 
 ## Mapping implementation status (PHASE 2/3, evidence-backed)
@@ -49,7 +49,19 @@ Statuses follow the definitions from the plan:
 | SSE state machine (text/reasoning/tool_call/tool_completed/usage/done/error; duplicate & anomaly handling) | `src/streaming/state.ts` | implemented | `tests/unit/streaming-state.test.ts` |
 | OpenAI chunk emission + terminating `[DONE]` for the OpenCode surface | `src/streaming/opencode.ts` | implemented | `tests/unit/streaming-opencode.test.ts` |
 
-**Note**: the mapping layer is implemented and unit-tested. Integration into the plugin request path (`src/v2/`) still awaits PHASE 4 wiring and live-API credentials; statuses above the table therefore stay below `SUPPORTED` until integration evidence exists, per the evidence rule.
+## PHASE 4 evidence: tools & session-scoped state
+
+| Capability | Module | Status | Evidence |
+|---|---|---|---|
+| Function-name validation (Latin letters only, no leading digit — `CustomFunction.name`) | `src/gigachat/v2/tools/normalize.ts` | implemented | `tests/unit/tools-normalize.test.ts` |
+| Session-scoped alias registry (replaces legacy global `toolRegistry`; deterministic `tool_N`, reverse lookup, passthrough for spec-valid names, per-instance isolation) | `src/gigachat/v2/tools/normalize.ts` | implemented | `tests/unit/tools-normalize.test.ts` (scope isolation between registries) |
+| `CustomFunction` shaping (`name`+`parameters` spec-required; controlled errors instead of guessed defaults) | `src/gigachat/v2/tools/function.ts`, wired via `toV2Tools` | implemented | `tests/unit/tools-function.test.ts` |
+| Builtin tool wire entries (`image_generate`, `model_3d_generate`; unknown id → controlled error) | `src/gigachat/v2/tools/builtin.ts`, wired via `toV2Tools` | implemented | `tests/unit/tools-builtin.test.ts` |
+| Parallel tool-call linkage (`tool_1 → result_1` invariant; orphan/duplicate → controlled error; missing → informational) | `src/gigachat/v2/tools/parallel.ts`, wired into request mapping (`toV2Message`) | implemented | `tests/unit/tools-parallel.test.ts` (1/2/5/10 tools, reorder, mixed, duplicates, orphans) |
+| Session-scoped `tools_state_id` store (lifecycle response→extract→store→next request; session isolation; interleaved captures; no global mutable state) | `src/gigachat/v2/tools/state.ts` | implemented | `tests/unit/tools-state.test.ts` (sequential state, A≠B, concurrency-style interleave, independent stores) |
+| SSE capture of `tools_state_id` from `response.message.done` | `src/streaming/state.ts` (`lastToolsStateId`) | implemented | `tests/unit/streaming-state.test.ts` |
+
+**Note**: the mapping layer and the tools/state modules are implemented and unit-tested. Integration into the plugin request path (`src/v2/`) awaits the runtime phases (streaming + JSON wiring) and live-API credentials; statuses above therefore stay below `SUPPORTED` until integration evidence exists, per the evidence rule.
 
 ## Next Steps
 1. Verify each row against live API (where possible) using test credentials.
@@ -63,4 +75,4 @@ Statuses follow the definitions from the plan:
 5. Update this matrix as statuses change (only to `SUPPORTED`/`PARTIAL` after evidence).
 
 ---  
-*Last updated: 2026-09-15 (PHASE 0–3: V2 contract, mapping layer and SSE state machine delivered; plugin integration pending).*
+*Last updated: 2026-09-15 (PHASE 0–4: V2 contract, mapping layer, SSE state machine, tools & session-scoped state delivered; plugin integration pending).*
