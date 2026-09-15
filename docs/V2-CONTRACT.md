@@ -27,7 +27,7 @@ OpenAPI spec: gigachat-api.yml (cleaned)
           },
           "function_call": {                         // same as FunctionCallArgs
             "name": "string",
-            "arguments": "any"
+            "arguments": "string (JSON stringified)"
           }
         }
       ]
@@ -105,7 +105,7 @@ OpenAPI spec: gigachat-api.yml (cleaned)
           "files": [ { "target": "image|audio|3dmodel", "id": "string", "mime": "string" } ],
           "function_call": {                         // same as FunctionCallArgs
             "name": "string",
-            "arguments": "any"
+            "arguments": "string (JSON stringified)"
           },
           "tool_execution": {                        // built-in tool result
             "name": "string (e.g. image_generation)",
@@ -135,7 +135,7 @@ OpenAPI spec: gigachat-api.yml (cleaned)
         "step": {
           "function_call": {
             "name": "string",
-            "arguments": "any"
+            "arguments": "string (JSON stringified)"
           },
           "functions_in": ["string"],
           "functions_out": ["string"],
@@ -178,6 +178,10 @@ OpenAPI spec: gigachat-api.yml (cleaned)
 | **Authentication** | unchanged (OAuth2 V2) | same |
 
 ## Notes
+- `FunctionCallArgs.arguments` is a **JSON string** (spec-confirmed 2026-09-15), e.g. `'{"city":"Moscow"}'` — never an object on the wire.
+- Content items are keyed objects **without** a `type` discriminator: `{text}`, `{files}`, `{function_result}`, `{function_call}`, `{inline_data}` — do not emit (or expect) `type` fields.
+- Roles are limited to `user|system|assistant|tool`: there is **no** `developer` role in V2 (an incoming `developer` role maps to `system`).
+- There is **no** `image` content part in the spec; image input paths (if any) must be resolved against the live API before PHASE 6.
 - `tool_state_id` (on messages) replaces V1's `functions_state_id`. It is scoped to the message (assistant) and must be echoed back in subsequent requests to maintain state.
 - The `functions` array inside `tools[0].functions.specifications` is the user‑defined function contract (similar to V1's `functions` but wrapped).
 - Built‑in tools (`image_generate`, `model_3d_generate`) are declared via `tools` array with empty objects.
@@ -188,7 +192,7 @@ OpenAPI spec: gigachat-api.yml (cleaned)
 ## Implications for gigachat-v2-connector
 1. **Endpoint change** → update `GIGACHAT_COMPLETIONS_URL` to `https://api.giga.chat/v2/chat/completions` (or keep indirection via host mapping).
 2. **Request mapping** must convert OpenAI `messages` (with optional `tool_cells`, `function_call`) into V2 `messages.content` parts, and move `tools`/`tool_choice` into `tools` + `tool_config`.
-3. **Response mapping** must extract `content` parts from V2 `messages` and rebuild OpenAI `tool_cells`/`function_call` (preserving `call_id` via mapping) and `usage`.
+3. **Response mapping** must extract `content` parts from V2 `messages` and rebuild OpenAI `tool_calls`/`function_call` and `usage`. V2 `function_call` parts carry **no id** — ids are generated at the boundary and used for sequential linking of tool calls to results.
 4. **State handling**: `tool_state_id` must be stored per conversation and fed back in assistant messages.
 5. **Streaming**: replace current SSE transformer with V2 event mapping.
 6. **Reasoning**: remove CoT system prompt; rely on model selection (if reasoning supported by model).
@@ -198,12 +202,14 @@ OpenAPI spec: gigachat-api.yml (cleaned)
 10. **Usage**: passthrough `input_tokens`, `output_tokens`, `total_tokens`; optionally expose `cached_tokens`.
 
 ## Open Issues (to verify with live API)
-- Exact structure of `FunctionCallArgs` (name, arguments as string or object?).
+- ~~Exact structure of `FunctionCallArgs`~~ — **CLOSED 2026-09-15**: `{name: string, arguments: string}` with `arguments` a JSON-wrapped string (official spec, gigachat-api.yml).
 - Whether `files` in request expects pre‑uploaded IDs (same as V1) or supports base64 inline.
 - Whether `tool_state_id` is required for all assistant messages when tools are used.
 - Whether `thread_id` is needed for multi‑turn context.
 - Whether `model_options` supports `reasoning` field (not present in spec).
 - Whether `response_format` can be used together with `tools` (spec says in V1 it was only allowed when no tools; need to check V2).
+- Spec anomaly observed in the SSE example: `finish_reason: "error"` is shown in `response.message.done` despite not being part of the enum — verify against live API.
+- Spec anomaly: `created_at` is typed as `string` in some places of the spec and as integer in others — verify against live API.
 
 ---
 *This document reflects the official V2 contract as of the downloaded OpenAPI spec. Any discrepancies with live API must be reported and treated as blockers (see agents.md RULE 3).*
