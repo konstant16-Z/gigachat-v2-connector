@@ -11,6 +11,7 @@ import {
   emptyContentDeltaStream,
   emptyDataStream,
   errorFinishStream,
+  liveToolDoneStream,
   malformedStream,
   multiToolStream,
   reasoningStream,
@@ -158,18 +159,36 @@ describe("stream state machine", () => {
     expect(second).toEqual([]);
   });
 
-  test("done payload captures tools_state_id for the session store (PHASE 4)", () => {
+  test("live shape: function_call and tool_state_id arrive only in done.messages", () => {
+    const { events, errors } = runStream(liveToolDoneStream);
+    expect(errors).toEqual([]);
+    expect(events.filter((e) => e.kind === "tool_call")).toEqual([
+      {
+        kind: "tool_call",
+        callId: "call_1",
+        name: "get_weather",
+        arguments: '{"city":"Moscow"}',
+      },
+    ]);
+    expect(events.find((e) => e.kind === "usage")).toEqual({
+      kind: "usage",
+      usage: { promptTokens: 5, completionTokens: 10, totalTokens: 15 },
+    });
+    expect(events.at(-1)).toEqual({
+      kind: "done",
+      finishReason: "tool_calls",
+      model: "GigaChat-2-Max",
+    });
+  });
+
+  test("done payload captures tool_state_id (live nested) for the session store", () => {
     const parser = new SseParser();
     const machine = new StreamStateMachine();
-    machine.push(classifyEvent(parser.push(textStream)[0]));
-    machine.push(classifyEvent(parser.push(textStream)[1]));
-    machine.push(
-      classifyEvent(
-        parser.push(
-          'event: response.message.done\ndata: {"finish_reason":"function_call","tools_state_id":"state-stream-9"}\n\n',
-        )[0],
-      ),
-    );
-    expect(machine.lastToolsStateId).toBe("state-stream-9");
+    for (const sse of parser.push(liveToolDoneStream)) {
+      for (const ev of machine.push(classifyEvent(sse))) {
+        void ev;
+      }
+    }
+    expect(machine.lastToolsStateId).toBe("state-live-sse-77");
   });
 });

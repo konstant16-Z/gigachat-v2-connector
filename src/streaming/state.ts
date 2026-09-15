@@ -38,6 +38,8 @@ export class StreamStateMachine {
   private usageEmitted = false;
   private callCounter = 0;
   private pendingCalls = new Map<string, { name: string; args: string }>();
+  /** Function-call names already surfaced via deltas (dedupe done payload). */
+  private emittedCallNames = new Set<string>();
 
   /** Last file ids seen in deltas (kept for the aggregated message; PHASE 7). */
   public lastFileIds: string[] = [];
@@ -102,6 +104,7 @@ export class StreamStateMachine {
       }
       if (item.function_call !== undefined) {
         const call = this.trackCall(item.function_call.name, item.function_call.arguments);
+        this.emittedCallNames.add(item.function_call.name);
         out.push({ kind: "tool_call", callId: call.callId, name: call.name, arguments: call.args });
       }
       if (item.files !== undefined && item.files.length > 0) {
@@ -123,7 +126,28 @@ export class StreamStateMachine {
 
   private onDone(p: StreamMessagePayload): InternalStreamEvent[] {
     const out: InternalStreamEvent[] = [];
-    if (p.tools_state_id !== undefined) this.lastToolsStateId = p.tools_state_id;
+    if (p.tool_state_id !== undefined) this.lastToolsStateId = p.tool_state_id;
+    else if (p.tools_state_id !== undefined) this.lastToolsStateId = p.tools_state_id;
+    // Live tools streams deliver the final function_call (and tool executions)
+    // only inside the done payload's messages, without preceding delta frames —
+    // surface them here, skipping call names already emitted via deltas.
+    for (const item of p.content ?? []) {
+      if (item.function_call !== undefined && !this.emittedCallNames.has(item.function_call.name)) {
+        const call = this.trackCall(item.function_call.name, item.function_call.arguments);
+        this.emittedCallNames.add(item.function_call.name);
+        out.push({ kind: "tool_call", callId: call.callId, name: call.name, arguments: call.args });
+      }
+      if (item.tool_execution !== undefined) {
+        const te = item.tool_execution;
+        out.push({
+          kind: "tool_completed",
+          ...(te.name !== undefined ? { name: te.name } : {}),
+          ...(te.status !== undefined ? { status: te.status } : {}),
+          ...(te.seconds_left !== undefined ? { seconds_left: te.seconds_left } : {}),
+          ...(te.censored !== undefined ? { censored: te.censored } : {}),
+        });
+      }
+    }
     if (!this.usageEmitted && p.usage !== undefined) {
       out.push({ kind: "usage", usage: toNormalizedUsage(p.usage) });
       this.usageEmitted = true;

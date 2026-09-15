@@ -135,11 +135,11 @@ describe("createV2Pipeline.streamingResponse", () => {
     expect(body).toContain("data: [DONE]");
   });
 
-  test("tools_state_id from response.message.done is captured at flush", async () => {
+  test("tool_state_id from response.message.done (live nested) is captured at flush", async () => {
     const pipeline = createV2Pipeline();
     const withState =
-      'event: response.message.delta\ndata: {"role":"assistant","content":[{"text":"ok"}]}\n\n' +
-      'event: response.message.done\ndata: {"finish_reason":"stop","tools_state_id":"state-sse-7"}\n\n';
+      'event: response.message.delta\ndata: {"messages":[{"role":"assistant","content":[{"text":"ok"}]}]}\n\n' +
+      'event: response.message.done\ndata: {"messages":[{"role":"assistant","tool_state_id":"state-sse-7","content":[{"text":"ok"}]}],"finish_reason":"stop"}\n\n';
     const upstream = new Response(new TextEncoder().encode(withState), {
       headers: { "Content-Type": "text/event-stream" },
     });

@@ -6,10 +6,11 @@
  * The spec (docs/external/gigachat-api.yml) names four event types but gives
  * only a sparse, internally inconsistent example payload (V2 plain object vs
  * legacy OpenAI-shaped object; `created_at` string vs integer; `finish_reason:
- * "error"` outside the enum). Per agents.md RULE 3 we do not guess: payload
- * fields are extracted defensively (type-checked, optional) and everything
- * that cannot be matched is surfaced as `unknown`/`malformed` instead of being
- * silently swallowed.
+ * "error"` outside the enum). Live API (docs/LIVE_API_OBSERVATIONS.md) nests
+ * the message under `messages: [...]` with an object-`arguments` function_call.
+ * Per agents.md RULE 3 we do not guess: payload fields are extracted
+ * defensively (type-checked, optional) and everything that cannot be matched is
+ * surfaced as `unknown`/`malformed` instead of being silently swallowed.
  */
 import type { V2ResponseContentItem, V2ResponseUsage } from "../gigachat/v2/types";
 import type { SseEvent } from "./parser";
@@ -23,6 +24,8 @@ export interface StreamMessagePayload {
   /** V2FinishReason or the spec-anomaly `"error"`. */
   finish_reason?: string;
   usage?: V2ResponseUsage;
+  /** Live API field (verified); spec names it `tools_state_id`. */
+  tool_state_id?: string;
   tools_state_id?: string;
   model?: string;
   /** Spec anomaly: string in the SSE example, integer in the JSON schema. */
@@ -86,24 +89,51 @@ function parseData(data: string): unknown {
 
 function asMessagePayload(raw: object): StreamMessagePayload {
   const rec = raw as Record<string, unknown>;
+  // Live V2 SSE (verified 2026-09-15) nests the message under `messages: [...]`:
+  //   delta: {model, created_at, messages:[{role, content:[...]}]}
+  //   done (tools): {model, created_at, messages:[{role, tool_state_id,
+  //                  content:[{function_call}]}], finish_reason, usage}
+  // Unwrap the first nested message; the flat spec-example / legacy layout is
+  // also tolerated as a fallback (defensive, agents.md RULE 3).
+  const first = Array.isArray(rec.messages)
+    ? (rec.messages.find(
+        (m): m is Record<string, unknown> =>
+          typeof m === "object" && m !== null && !Array.isArray(m),
+      ) ?? undefined)
+    : undefined;
+
   const p: StreamMessagePayload = {};
-  if (typeof rec.message_id === "string") p.message_id = rec.message_id;
-  if (typeof rec.role === "string") p.role = rec.role;
+  if (first !== undefined) {
+    if (typeof first.message_id === "string") p.message_id = first.message_id;
+    if (typeof first.role === "string") p.role = first.role;
+    if (typeof first.tool_state_id === "string") p.tool_state_id = first.tool_state_id;
+    if (typeof first.tools_state_id === "string") p.tools_state_id = first.tools_state_id;
+    if (typeof first.reasoning_content === "string") p.reasoning_content = first.reasoning_content;
+    if (Array.isArray(first.content)) {
+      const items = collectContentItems(first.content);
+      if (items.length > 0) p.content = items;
+    }
+  } else {
+    if (typeof rec.message_id === "string") p.message_id = rec.message_id;
+    if (typeof rec.role === "string") p.role = rec.role;
+    if (typeof rec.tools_state_id === "string") p.tools_state_id = rec.tools_state_id;
+    if (typeof rec.reasoning_content === "string") p.reasoning_content = rec.reasoning_content;
+    if (Array.isArray(rec.content)) {
+      const items = collectContentItems(rec.content);
+      if (items.length > 0) p.content = items;
+    }
+  }
+  // State token may also sit flat on the payload (server variants).
+  if (p.tool_state_id === undefined && typeof rec.tool_state_id === "string") {
+    p.tool_state_id = rec.tool_state_id;
+  }
+  if (p.tools_state_id === undefined && typeof rec.tools_state_id === "string") {
+    p.tools_state_id = rec.tools_state_id;
+  }
   if (typeof rec.finish_reason === "string") p.finish_reason = rec.finish_reason;
-  if (typeof rec.tools_state_id === "string") p.tools_state_id = rec.tools_state_id;
   if (typeof rec.model === "string") p.model = rec.model;
   if (typeof rec.created_at === "number" || typeof rec.created_at === "string") {
     p.created_at = rec.created_at;
-  }
-  if (typeof rec.reasoning_content === "string") p.reasoning_content = rec.reasoning_content;
-  if (Array.isArray(rec.content)) {
-    const items: V2ResponseContentItem[] = [];
-    for (const item of rec.content) {
-      if (typeof item === "object" && item !== null && !Array.isArray(item)) {
-        items.push(item as V2ResponseContentItem);
-      }
-    }
-    if (items.length > 0) p.content = items;
   }
   if (rec.usage !== null && typeof rec.usage === "object") {
     const u = rec.usage as Record<string, unknown>;
@@ -124,6 +154,16 @@ function asMessagePayload(raw: object): StreamMessagePayload {
     }
   }
   return p;
+}
+
+function collectContentItems(content: unknown[]): V2ResponseContentItem[] {
+  const items: V2ResponseContentItem[] = [];
+  for (const item of content) {
+    if (typeof item === "object" && item !== null && !Array.isArray(item)) {
+      items.push(item as V2ResponseContentItem);
+    }
+  }
+  return items;
 }
 
 function asToolPayload(raw: object): StreamToolPayload {
