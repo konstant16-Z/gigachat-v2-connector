@@ -6,6 +6,7 @@
  * silently dropped (agents.md RULE 8/13). tool_execution items are surfaced as
  * tool results provisionally until PHASE 7 (builtin tools).
  */
+import { toOpenAiFinishReason } from "../gigachat/v2/finish-reason";
 import type {
   ChatCompletionV2Response,
   V2FinishReason,
@@ -87,28 +88,6 @@ function toChoice(
     message,
     finishReason: toOpenAiFinishReason(finishReason),
   };
-}
-
-function toOpenAiFinishReason(reason: V2FinishReason): string | null {
-  switch (reason) {
-    case "stop":
-      return "stop";
-    case "length":
-      return "length";
-    case "function_call":
-      return "tool_calls";
-    case "function_call_error":
-      // Invalid arguments are surfaced in the message content; promoting this
-      // to a hard error is deferred to the error-normalization phase (documented).
-      return "stop";
-    case "blacklist":
-    case "request_blacklist":
-    case "request_whitelist":
-    case "request_filter":
-    case "response_blacklist":
-      // Closest OpenAI-compatible signal is content_filter (documented).
-      return "content_filter";
-  }
 }
 
 function toUsage(resp: ChatCompletionV2Response): NormalizedResponse["usage"] {
