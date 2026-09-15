@@ -15,13 +15,14 @@ import type {
   NormalizedTool,
   ToolResultPart,
 } from "../core/types";
+import { toV2BuiltinTool } from "../gigachat/v2/tools/builtin";
+import { toCustomFunction } from "../gigachat/v2/tools/function";
+import { type ToolResultRef, verifyToolLinkage } from "../gigachat/v2/tools/parallel";
 import type {
   ChatCompletionV2Request,
   CustomFunction,
-  FunctionCallArgs,
   ModelOptions,
   ToolConfig,
-  V2ContentItem,
   V2Message,
   V2Tool,
 } from "../gigachat/v2/types";
@@ -49,6 +50,33 @@ export function normalizedToGigaChatV2(norm: NormalizedRequest): ChatCompletionV
 function toV2Message(m: NormalizedMessage, priorMessages: NormalizedMessage[]): V2Message {
   const v2: V2Message = { role: m.role, content: [] };
   if (m.stateId) v2.tool_state_id = m.stateId;
+  // Tool identity invariant (plan §10): tool_1 → result_1. Resolve and verify
+  // all tool results of this message against prior assistant calls BEFORE
+  // emitting content, so orphan/duplicate results fail as controlled errors.
+  const results: Array<ToolResultPart & { index: number }> = [];
+  for (const part of m.content) {
+    if (part.type === "tool_result") results.push({ ...part, index: results.length });
+  }
+  const priorCalls = priorMessages.flatMap((pm) => pm.toolCalls ?? []);
+  const linkage = verifyToolLinkage(
+    priorCalls,
+    results.map((r): ToolResultRef => ({ index: r.index, toolCallId: r.toolCallId, name: r.name })),
+  );
+  for (const orphan of linkage.orphanResults) {
+    throw new Error(
+      orphan.toolCallId !== undefined
+        ? `tool result without a resolvable function name (tool_call_id=${orphan.toolCallId})`
+        : `tool result without a tool_call_id or name (index ${orphan.index})`,
+    );
+  }
+  for (const dup of linkage.duplicateResults) {
+    throw new Error(
+      `duplicate tool result for call ${dup.toolCallId ?? "<none>"} ` +
+        "(tool_1 → result_2 is forbidden)",
+    );
+  }
+  const linkedNames = linkage.linked.map((l) => l.name);
+  let resultIndex = 0;
   for (const part of m.content) {
     switch (part.type) {
       case "text":
@@ -63,46 +91,29 @@ function toV2Message(m: NormalizedMessage, priorMessages: NormalizedMessage[]): 
         throw new Error(
           "image content part cannot map to V2 yet (PHASE 6: file upload / inline_data mapping)",
         );
-      case "tool_result":
-        v2.content.push(toFunctionResult(part, priorMessages));
+      case "tool_result": {
+        const linked = linkedNames[resultIndex];
+        resultIndex += 1;
+        if (linked === undefined) {
+          // Unreachable while verifyToolLinkage passes; defensive controlled
+          // error instead of a silent empty name.
+          throw new Error("internal: tool_result without resolved linkage");
+        }
+        v2.content.push({ function_result: { name: linked, result: part.result } });
         break;
+      }
     }
   }
   for (const call of m.toolCalls ?? []) {
-    v2.content.push({ function_call: toFunctionCallArgs(call.name, call.arguments) });
+    v2.content.push({
+      function_call: { name: call.name, arguments: stringifyArguments(call.arguments) },
+    });
   }
   return v2;
 }
 
-/** name is required by `function_result`; resolve it from prior tool calls. */
-function toFunctionResult(part: ToolResultPart, priorMessages: NormalizedMessage[]): V2ContentItem {
-  const name = part.name ?? resolveToolName(part.toolCallId, priorMessages);
-  if (!name) {
-    throw new Error(
-      `tool result without a resolvable function name (tool_call_id=${part.toolCallId ?? "<none>"})`,
-    );
-  }
-  return { function_result: { name, result: part.result } };
-}
-
-function resolveToolName(
-  toolCallId: string | undefined,
-  priorMessages: NormalizedMessage[],
-): string | undefined {
-  if (!toolCallId) return undefined;
-  for (const m of priorMessages) {
-    for (const call of m.toolCalls ?? []) {
-      if (call.id === toolCallId) return call.name;
-    }
-  }
-  return undefined;
-}
-
-function toFunctionCallArgs(
-  name: string,
-  args: Record<string, unknown> | undefined,
-): FunctionCallArgs {
-  return { name, arguments: JSON.stringify(args ?? {}) };
+function stringifyArguments(args: Record<string, unknown> | undefined): string {
+  return JSON.stringify(args ?? {});
 }
 
 function toModelOptions(norm: NormalizedRequest): ModelOptions | undefined {
@@ -148,25 +159,10 @@ function toV2Tools(tools: NormalizedTool[] | undefined): V2Tool[] | undefined {
   for (const tool of tools) {
     if (tool.builtin !== undefined) {
       // Builtin tool ids are interpreted at the boundary only.
-      if (tool.builtin === "image_generate") builtins.push({ image_generate: {} });
-      else if (tool.builtin === "model_3d_generate") builtins.push({ model_3d_generate: {} });
-      else {
-        throw new Error(
-          `unknown builtin tool "${tool.builtin}" (image_generate|model_3d_generate expected)`,
-        );
-      }
+      builtins.push(toV2BuiltinTool(tool.builtin));
       continue;
     }
-    const fn: CustomFunction = { name: tool.name };
-    if (tool.description !== undefined) fn.description = tool.description;
-    if (tool.parameters !== undefined) {
-      fn.parameters = tool.parameters as Record<string, unknown>;
-    }
-    if (tool.fewShotExamples !== undefined) fn.few_shot_examples = tool.fewShotExamples;
-    if (tool.returnParameters !== undefined) {
-      fn.return_parameters = tool.returnParameters as Record<string, unknown>;
-    }
-    specifications.push(fn);
+    specifications.push(toCustomFunction(tool));
   }
   const out: V2Tool[] = [];
   if (specifications.length > 0) out.push({ functions: { specifications } });
