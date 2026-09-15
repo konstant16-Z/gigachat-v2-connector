@@ -6,9 +6,11 @@ import { describe, expect, test } from "bun:test";
 import { ToolNameRegistry, validateFunctionName } from "../../src/gigachat/v2/tools/normalize";
 
 describe("validateFunctionName", () => {
-  test("accepts spec-valid names", () => {
+  test("accepts live-valid names (hyphen and dot allowed)", () => {
     expect(validateFunctionName("weather_forecast")).toBeNull();
     expect(validateFunctionName("getWeather2")).toBeNull();
+    expect(validateFunctionName("get-weather")).toBeNull();
+    expect(validateFunctionName("weather.forecast")).toBeNull();
     expect(validateFunctionName("a")).toBeNull();
   });
 
@@ -16,9 +18,8 @@ describe("validateFunctionName", () => {
     expect(validateFunctionName("2weather")).toMatch(/must start with a Latin letter/);
   });
 
-  test("rejects non-Latin characters", () => {
+  test("rejects non-Latin characters and spaces", () => {
     expect(validateFunctionName("погода")).toMatch(/Latin letter/);
-    expect(validateFunctionName("get-weather")).toMatch(/Latin letter/);
     expect(validateFunctionName("get weather")).toMatch(/Latin letter/);
   });
 

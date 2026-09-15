@@ -15,19 +15,27 @@
  */
 import type { NormalizedToolCall } from "../../../core/types";
 
-/** Spec-valid function name: Latin letters/digits/underscores, no leading digit. */
-export const V2_FUNCTION_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_]*$/;
+/**
+ * Live-verified function name constraint (2026-09-15): "Only Latin letters
+ * (A-Z or a-z), underscore (_), hyphen (-), dot (.) and digits (not leading)
+ * are allowed." The spec (CustomFunction.name) only says Latin letters with
+ * no leading digit; the live rejection of names outside this pattern (422)
+ * is the working contract.
+ */
+export const V2_FUNCTION_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_.-]*$/;
 
 /**
- * Validate a function name against the V2 constraint. Returns an error message
- * or `null` when the name is spec-valid.
+ * Validate a function name against the live V2 constraint. Returns an error
+ * message or `null` when the name is valid.
  */
 export function validateFunctionName(name: string): string | null {
   if (name.length === 0) return "function name must not be empty";
   if (!V2_FUNCTION_NAME_PATTERN.test(name)) {
     return (
       `function name "${name}" must start with a Latin letter and contain only ` +
-      "Latin letters, digits and underscores (V2 spec: CustomFunction.name)"
+      "Latin letters, digits, underscores, hyphens and dots " +
+      '(live API: "Only Latin letters (A-Z or a-z), underscore (_), hyphen (-), ' +
+      'dot (.) and digits (not leading) are allowed.")'
     );
   }
   return null;
