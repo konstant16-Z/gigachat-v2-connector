@@ -54,8 +54,9 @@ function toChoice(
     }
     if (item.function_call !== undefined) {
       toolCalls.push({
-        // V2 function_call parts carry no id (documented); generated locally.
-        id: crypto.randomUUID(),
+        // Live API returns an id on function_call responses (verified); the
+        // spec has none — fall back to a generated id for round-trip linkage.
+        id: item.function_call.id ?? crypto.randomUUID(),
         name: item.function_call.name,
         arguments: parseToolArguments(item.function_call.arguments),
       });
@@ -80,7 +81,8 @@ function toChoice(
     content: texts.length > 0 ? texts.join("") : null,
     contentParts: parts,
   };
-  if (m.tools_state_id !== undefined) message.stateId = m.tools_state_id;
+  if (m.tool_state_id !== undefined) message.stateId = m.tool_state_id;
+  else if (m.tools_state_id !== undefined) message.stateId = m.tools_state_id;
   if (toolCalls.length > 0) message.toolCalls = toolCalls;
   if (Object.keys(extras).length > 0) message.metadata = extras;
 

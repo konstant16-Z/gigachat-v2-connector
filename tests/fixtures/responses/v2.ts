@@ -12,10 +12,17 @@ export const toolCallV2Response: ChatCompletionV2Response = {
   messages: [
     {
       role: "assistant",
-      tools_state_id: "state-abc-123",
+      // Live API field name (verified 2026-09-15); spec names it tools_state_id.
+      tool_state_id: "state-abc-123",
       content: [
         { text: "Let me check." },
-        { function_call: { name: "get_weather", arguments: '{"city":"Moscow"}' } },
+        {
+          function_call: {
+            id: "fc-live-1",
+            name: "get_weather",
+            arguments: { city: "Moscow" },
+          },
+        },
       ],
     },
   ],
@@ -25,6 +32,21 @@ export const toolCallV2Response: ChatCompletionV2Response = {
     total_tokens: 32,
     input_tokens_details: { cached_tokens: 5 },
   },
+};
+
+/** Spec-named state field (tools_state_id) is still accepted at the boundary. */
+export const specStateV2Response: ChatCompletionV2Response = {
+  model: "GigaChat-2-Max",
+  created_at: 1700000003,
+  finish_reason: "stop",
+  messages: [
+    {
+      role: "assistant",
+      tools_state_id: "state-spec-9",
+      content: [{ text: "ok" }],
+    },
+  ],
+  usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
 };
 
 export const filesV2Response: ChatCompletionV2Response = {

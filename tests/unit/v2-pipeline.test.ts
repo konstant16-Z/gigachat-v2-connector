@@ -22,7 +22,7 @@ function v2ResponseWithState(stateId?: string): ChatCompletionV2Response {
       {
         role: "assistant",
         content: [{ text: "Привет" }, { text: " мир!" }],
-        ...(stateId !== undefined ? { tools_state_id: stateId } : {}),
+        ...(stateId !== undefined ? { tool_state_id: stateId } : {}),
       },
     ],
     usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },

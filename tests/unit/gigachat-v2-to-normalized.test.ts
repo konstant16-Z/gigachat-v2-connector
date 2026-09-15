@@ -4,7 +4,12 @@
 import { describe, expect, test } from "bun:test";
 import type { ChatCompletionV2Response } from "../../src/gigachat/v2/types";
 import { gigachatV2ToNormalized } from "../../src/translation/gigachat-v2-to-normalized";
-import { blacklistV2Response, filesV2Response, toolCallV2Response } from "../fixtures/responses/v2";
+import {
+  blacklistV2Response,
+  filesV2Response,
+  specStateV2Response,
+  toolCallV2Response,
+} from "../fixtures/responses/v2";
 
 describe("gigachat-v2-to-normalized", () => {
   test("maps text, tool_calls finish reason, usage and thread metadata", () => {
@@ -31,9 +36,22 @@ describe("gigachat-v2-to-normalized", () => {
     });
   });
 
-  test("parses function_call string arguments into an arguments object", () => {
+  test("passes object arguments through and keeps the live function_call id", () => {
     const normalized = gigachatV2ToNormalized(toolCallV2Response);
-    expect(normalized.choices[0].message.toolCalls?.[0].arguments).toEqual({ city: "Moscow" });
+    const call = normalized.choices[0].message.toolCalls?.[0];
+    expect(call).toMatchObject({
+      id: "fc-live-1",
+      name: "get_weather",
+      arguments: { city: "Moscow" },
+    });
+  });
+
+  test("reads tool_state_id (live) and falls back to spec tools_state_id", () => {
+    const live = gigachatV2ToNormalized(toolCallV2Response);
+    expect(live.choices[0].message.stateId).toBe("state-abc-123");
+
+    const spec = gigachatV2ToNormalized(specStateV2Response);
+    expect(spec.choices[0].message.stateId).toBe("state-spec-9");
   });
 
   test("preserves files, tool_execution and inline_data without dropping content", () => {
