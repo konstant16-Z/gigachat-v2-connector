@@ -193,3 +193,31 @@ Live-паттерн: `^[A-Za-z][A-Za-z0-9_.-]*$` (**допускает `-` и `.
 6. SSE: разворачивать `messages` в delta/done; state брать из `done.messages[0].tool_state_id`.
 7. Валидатор имён: расширить паттерн (`-`, `.`).
 8. (Документация) Аномалии спеки: `tools_state_id`→`tool_state_id`, `FunctionCallArgs.id`, `arguments` string→object, FunctionMessage content array, UserMessage content array, SSE examples устарели, `thread_id` отсутствует в live.
+
+---
+
+## 9. `model_options.response_format` — live-проверка (2026-09-16, `scripts/probe-response-format.ts`)
+
+Зонд: по одному запросу (`GigaChat-2-Max`) на вариант, `content` как массив keyed-объектов; статус + текст ответа записаны.
+
+| Вариант `response_format` | Статус | Комментарий |
+|---|---|---|
+| нет `model_options` (baseline) | 200 | обычный текст |
+| `model_options.temperature` only | 200 | обычный текст |
+| `{type:"text"}` | 200 | спека-валиден |
+| `{type:"json"}` | **400** | `Unknown type "json" in response_format` |
+| `{type:"json_object"}` | **400** | `Unknown type "json_object" in response_format` |
+| `{type:"json_schema", schema:{...}}` | 200 | ответ — JSON; без `strict` модель добавляет свои поля (`"type":"word","_content":...`) |
+| `{type:"json_schema"}` без `schema` | **400** | `Empty schema with json format type is not supported` |
+| `{type:"json_schema", schema, strict:true}` | 200 | строгое соответствие схеме |
+| `{type:"xml"}` | **400** | `Unknown type "xml" in response_format` |
+
+Выводы (wire-формат решается live-API):
+
+- V2 принимает в `model_options.response_format` ровно два типа: **`text`** и **`json_schema`** (совпадает со спекой, дискриминатор `ChatResponseFormat`; `json`/`json_object` — **не поддерживаются**, 400).
+- `json_schema` **требует `schema`** (400 без неё) — маппер должен кидать контролируемую ошибку вместо того, чтобы слать без схемы.
+- Прежнее отображение `json_object → {type:"json"}` в маппере — **неверно** (400); либо контролируемая ошибка, либо клиент должен использовать `json_schema`.
+- `strict:true` работает как в спеке (требует `required` в схеме).
+- Косвенное подтверждение: request `content` должен быть **массивом keyed-объектов**; строка → 400 `Your request contains invalid JSON syntax` (generic-сообщение валидатора — энвольвер на любое нарушение тела).
+
+Противоречие плану: план §13 заявлял поддержку `json_object` — live показывает, что его нет в V2 (`Unknown type "json_object" in response_format`).
