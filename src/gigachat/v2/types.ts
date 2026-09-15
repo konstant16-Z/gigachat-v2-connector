@@ -89,7 +89,7 @@ export interface ModelOptions {
   unnormalized_history?: boolean;
   top_logprobs?: number;
   response_format?: {
-    type: "json" | "json_schema";
+    type: "text" | "json_schema";
     schema?: unknown;
     strict?: boolean;
   };

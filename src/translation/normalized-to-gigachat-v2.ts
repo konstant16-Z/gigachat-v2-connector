@@ -127,18 +127,42 @@ function toModelOptions(norm: NormalizedRequest): ModelOptions | undefined {
   }
   if (norm.responseFormat) {
     const fmt = norm.responseFormat;
-    if (fmt.type === "json_schema") {
-      opts.response_format = {
-        type: "json_schema",
-        ...(fmt.schema !== undefined ? { schema: fmt.schema } : {}),
-        ...(fmt.strict !== undefined ? { strict: fmt.strict } : {}),
-      };
-    } else if (fmt.type === "json_object") {
-      opts.response_format = { type: "json" };
+    switch (fmt.type) {
+      case "text":
+        // Explicit text is the V2 default; emit it so the request is not
+        // silently altered (agents.md RULE 13).
+        opts.response_format = { type: "text" };
+        break;
+      case "json_object":
+        // LIVE 2026-09-16: `{"type":"json"}` and `{"type":"json_object"}`
+        // are both rejected (400 "Unknown type ... in response_format"); V2
+        // accepts only text | json_schema. Raising a controlled error instead
+        // of guessing or silently degrading (§13, agents.md RULE 13).
+        throw new Error(
+          'response_format "json_object" is not representable in V2 (live API rejects ' +
+            '"json"/"json_object"; use json_schema with a schema)',
+        );
+      case "json_schema":
+        if (fmt.schema === undefined) {
+          // LIVE 2026-09-16: `json_schema` without `schema` → 400 "Empty
+          // schema with json format type is not supported".
+          throw new Error(
+            'response_format "json_schema" requires a schema (live API: "Empty schema ' +
+              'with json format type is not supported")',
+          );
+        }
+        opts.response_format = {
+          type: "json_schema",
+          schema: fmt.schema,
+          ...(fmt.strict !== undefined ? { strict: fmt.strict } : {}),
+        };
+        break;
     }
   }
   // Not representable in V2 model_options (documented in the compatibility
-  // matrix): `stop` (no stop-token list in V2) and reasoning controls.
+  // matrix and live observations): `stop` (no stop-token list in V2),
+  // reasoning controls (V2 has no reasoning field; model choice controls it),
+  // and json_object → json_schema replacement (live API rejects json/json_object).
   return Object.keys(opts).length > 0 ? opts : undefined;
 }
 

@@ -72,6 +72,106 @@ describe("normalized-to-gigachat-v2", () => {
       strict: true,
     });
     expect(v2.tool_config).toEqual({ mode: "forced", function_name: "echo" });
+    // Fixture carries reasoning; V2 has no reasoning field, so the wire must
+    // contain neither a reasoning key nor any reasoning-shaped field.
+    expect(JSON.stringify(v2)).not.toContain("reasoning");
+  });
+
+  test('text response_format maps to {type:"text"}', () => {
+    const v2 = normalizedToGigaChatV2({
+      model: "GigaChat-2-Max",
+      messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      responseFormat: { type: "text" },
+    });
+    expect(v2.model_options?.response_format).toEqual({ type: "text" });
+  });
+
+  test("json_object is not representable in V2 → controlled error (live: 400)", () => {
+    expect(() =>
+      normalizedToGigaChatV2({
+        model: "GigaChat-2-Max",
+        messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+        responseFormat: { type: "json_object" },
+      }),
+    ).toThrow(/json_object.*not representable in V2/s);
+  });
+
+  test("json_schema without schema → controlled error (live: 400)", () => {
+    expect(() =>
+      normalizedToGigaChatV2({
+        model: "GigaChat-2-Max",
+        messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+        responseFormat: { type: "json_schema" },
+      }),
+    ).toThrow(/json_schema.*requires a schema/s);
+  });
+
+  test("complex json_schema passes through verbatim (nested/array/enum/required/additionalProperties)", () => {
+    const schema = {
+      type: "object",
+      additionalProperties: false,
+      required: ["name", "tags", "meta", "kind"],
+      properties: {
+        name: { type: "string" },
+        kind: { enum: ["a", "b", "c"] },
+        tags: { type: "array", items: { type: "string" } },
+        meta: {
+          type: "object",
+          required: ["x"],
+          properties: { x: { type: "number" }, nested: { type: "boolean" } },
+        },
+      },
+    };
+    const v2 = normalizedToGigaChatV2({
+      model: "GigaChat-2-Max",
+      messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      responseFormat: { type: "json_schema", schema, strict: false },
+    });
+    expect(v2.model_options?.response_format).toEqual({
+      type: "json_schema",
+      schema,
+      strict: false,
+    });
+  });
+
+  test("reasoning (effort) is dropped at the V2 boundary — V2 has no reasoning field", () => {
+    const v2 = normalizedToGigaChatV2({
+      model: "GigaChat-2-Max",
+      messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      reasoning: { effort: "low" },
+      temperature: 0.5,
+    });
+    expect(v2.model_options).toEqual({ temperature: 0.5 });
+    expect(JSON.stringify(v2)).not.toContain("reasoning");
+  });
+
+  test("reasoning (think budget) is dropped at the V2 boundary", () => {
+    const v2 = normalizedToGigaChatV2({
+      model: "GigaChat-2-Max",
+      messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      reasoning: { think: { budgetTokens: 800 } },
+    });
+    expect(v2.model_options).toBeUndefined();
+    expect(JSON.stringify(v2)).not.toContain("reasoning");
+  });
+
+  test("reasoning + tools + streaming: tools intact, no reasoning on the wire", () => {
+    const v2 = normalizedToGigaChatV2({
+      model: "GigaChat-2-Max",
+      messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      reasoning: { effort: "high" },
+      tools: [{ name: "echo", description: "Echo", parameters: { type: "object" } }],
+      stream: true,
+    });
+    expect(v2.stream).toBe(true);
+    expect(v2.tools).toEqual([
+      {
+        functions: {
+          specifications: [{ name: "echo", description: "Echo", parameters: { type: "object" } }],
+        },
+      },
+    ]);
+    expect(JSON.stringify(v2)).not.toContain("reasoning");
   });
 
   test("maps tool_choice none to tool_config.mode none", () => {

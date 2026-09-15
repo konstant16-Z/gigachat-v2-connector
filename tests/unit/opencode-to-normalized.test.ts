@@ -92,6 +92,24 @@ describe("opencode-to-normalized", () => {
     expect(normalized.toolChoice).toEqual({ functionName: "echo" });
   });
 
+  test("maps response_format json/json_object into normalized json_object", () => {
+    expect(
+      openCodeToNormalized({ messages: [], response_format: { type: "json" } }).responseFormat,
+    ).toEqual({
+      type: "json_object",
+    });
+    expect(
+      openCodeToNormalized({ messages: [], response_format: { type: "json_object" } })
+        .responseFormat,
+    ).toEqual({ type: "json_object" });
+    // text stays text
+    expect(
+      openCodeToNormalized({ messages: [], response_format: { type: "text" } }).responseFormat,
+    ).toEqual({
+      type: "text",
+    });
+  });
+
   test("maps tool_choice none string", () => {
     const normalized = openCodeToNormalized(builtinToolRequest);
     expect(normalized.toolChoice).toBe("none");
