@@ -1,7 +1,7 @@
 /**
  * Host/provider detection helpers.
  */
-import { GIGACHAT_COMPLETIONS_URL, GIGACHAT_FILES_URL, log } from "./constants.js";
+import { GIGACHAT_COMPLETIONS_URL, GIGACHAT_FILES_URL, GIGACHAT_V2_COMPLETIONS_URL, log } from "./constants.js";
 
 export const gigaHosts = new Set<string>([
   "api.gigachat.local",
@@ -64,5 +64,12 @@ export function targetUrlFor(requestUrl: string, isChat: boolean, isFiles: boole
     if (isFiles) return GIGACHAT_FILES_URL;
     return requestUrl.replace("api.gigachat.local/v1", "ngw.devices.sberbank.ru:9443/api/v2");
   }
+  return requestUrl;
+}
+
+/** Rewrite the local dev endpoint to the V2 Chat Completions API. */
+export function targetV2UrlFor(requestUrl: string): string {
+  const host = tryHost(requestUrl);
+  if (host === "api.gigachat.local") return GIGACHAT_V2_COMPLETIONS_URL;
   return requestUrl;
 }

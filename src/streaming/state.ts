@@ -45,6 +45,16 @@ export class StreamStateMachine {
   /** Latest `tools_state_id` from `response.message.done` (PHASE 4 capture). */
   public lastToolsStateId: string | undefined;
 
+  /** Model name from the stream meta; undefined until a delta carries it. */
+  get modelName(): string | undefined {
+    return this.model;
+  }
+
+  /** `created_at` from the stream meta; undefined until a delta carries it. */
+  get createdAt(): number | string | undefined {
+    return this.created;
+  }
+
   /** Feed a classified stream event; returns zero or more internal events. */
   push(event: GigaChatStreamEvent): InternalStreamEvent[] {
     if (this.doneEmitted) return [];

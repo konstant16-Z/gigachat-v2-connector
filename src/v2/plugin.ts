@@ -14,7 +14,16 @@ import { sanitizeError } from "./net.js";
 import { authManager } from "./auth.js";
 import { translateOpenAiToGigaChat } from "./translator.js";
 import { translateJsonResponse, translateStreamingResponse } from "./response.js";
-import { gigaHosts, registerGigaEndpoint, isGigaProvider, tryHost, targetUrlFor } from "./hosts.js";
+import { createV2Pipeline } from "../translation/v2-pipeline.js";
+import type { V2Pipeline } from "../translation/v2-pipeline.js";
+import {
+  gigaHosts,
+  registerGigaEndpoint,
+  isGigaProvider,
+  tryHost,
+  targetUrlFor,
+  targetV2UrlFor
+} from "./hosts.js";
 
 const PLUGIN_ID = "gigacode";
 
@@ -26,6 +35,8 @@ type Options = {
   verifySSL?: boolean;
   caBundle?: string;
   caBundlePath?: string;
+  /** Opt into the V2 mapping pipeline (plan §22) for chat completions. */
+  v2?: boolean;
 };
 
 const optionsShape = (options: unknown): Options =>
@@ -87,11 +98,21 @@ export async function resolveGigaConnection(ctx: IntegrationContext) {
   return undefined;
 }
 
+/** Session key for the tool-state store (V2 plugin API: `event.sessionID`). */
+const sessionKey = (event: any): string => {
+  const id = event?.sessionID;
+  return typeof id === "string" && id ? id : "default-session";
+};
+
 export const plugin = {
   id: PLUGIN_ID,
   async setup(ctx: IntegrationContext) {
     const options = optionsShape(ctx.options);
-    log("GigaCodeConnectorPlugin (V2) setup executing...");
+    const v2 = options.v2 === true;
+    const pipeline: V2Pipeline | undefined = v2
+      ? createV2Pipeline({ onSseError: (msg) => error("V2 SSE:", msg) })
+      : undefined;
+    log(`GigaCodeConnectorPlugin (V2) setup executing... (v2 pipeline: ${v2 ? "on" : "off"})`);
     if (typeof options.baseURL === "string" && options.baseURL) {
       registerGigaEndpoint(options.baseURL);
     }
@@ -178,8 +199,17 @@ export const plugin = {
               warn("Failed to parse OpenAI request body, forwarding raw:", e);
             }
           }
-          const gigaBody = await translateOpenAiToGigaChat(openAiBody, token, verifySsl, caBundle);
-          log("Forwarding translated request to GigaChat API completions...");
+          let gigaBody: unknown;
+          let targetUrl: string;
+          if (v2 && pipeline) {
+            gigaBody = pipeline.chatRequest(openAiBody, sessionKey(event));
+            targetUrl = targetV2UrlFor(requestUrl);
+            log("Forwarding V2-mapped request to GigaChat V2 completions...");
+          } else {
+            gigaBody = await translateOpenAiToGigaChat(openAiBody, token, verifySsl, caBundle);
+            targetUrl = targetUrlFor(requestUrl, isChat, isFiles);
+            log("Forwarding translated request to GigaChat API completions...");
+          }
           const headers = new Headers({
             Accept: "application/json",
             Authorization: `Bearer ${token}`,
@@ -225,7 +255,13 @@ export const plugin = {
         const isGiga = (host && gigaHosts.has(host)) || isGigaProvider(modelProvider);
         if (!isGiga || !event.response) return;
         const contentType = event.response.headers.get("content-type") || "";
-        if (contentType.includes("text/event-stream")) {
+        if (v2 && pipeline) {
+          const isChat = typeof requestUrl === "string" && requestUrl.includes("/chat/completions");
+          if (!isChat) return; // files/direct calls pass through untouched in V2 mode
+          event.response = contentType.includes("text/event-stream")
+            ? pipeline.streamingResponse(event.response, sessionKey(event))
+            : await pipeline.jsonResponseFromUpstream(event.response, sessionKey(event));
+        } else if (contentType.includes("text/event-stream")) {
           event.response = await translateStreamingResponse(event.response);
         } else {
           event.response = await translateJsonResponse(event.response);

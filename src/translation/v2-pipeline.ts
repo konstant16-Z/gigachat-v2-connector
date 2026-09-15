@@ -1,0 +1,180 @@
+/**
+ * V2 pipeline — thin orchestration of the mapping layer (plan §22 "thin
+ * plugin"). The plugin hooks delegate here; this module composes the mapping
+ * modules and the session-scoped `tools_state_id` store.
+ *
+ *   OpenAI body → NormalizedRequest → GigaChat V2 body
+ *   GigaChat V2 JSON → NormalizedResponse → OpenAI chat completion
+ *   GigaChat V2 SSE → (SseParser → StreamStateMachine → OpenAI chunks) → SSE
+ *
+ * All functions are pure with respect to their parameters except the
+ * per-pipeline session store: one pipeline instance per plugin load, keyed by
+ * session id — sessions never mix and there is no module-level conversation
+ * state (agents.md §14).
+ */
+
+import type { SessionToolStateStore } from "../gigachat/v2/tools/state";
+import { createToolStateStore } from "../gigachat/v2/tools/state";
+import type { ChatCompletionV2Request, ChatCompletionV2Response } from "../gigachat/v2/types";
+import { classifyEvent } from "../streaming/events";
+import type { StreamMeta } from "../streaming/opencode";
+import { internalToOpenAiChunks } from "../streaming/opencode";
+import { SseParser } from "../streaming/parser";
+import { StreamStateMachine } from "../streaming/state";
+import type { OpenAiChatBody, OpenAiChatCompletion } from "../types/gigachat";
+import { gigachatV2ToNormalized } from "./gigachat-v2-to-normalized";
+import { normalizedToGigaChatV2 } from "./normalized-to-gigachat-v2";
+import { normalizedToOpenCode } from "./normalized-to-opencode";
+import { openCodeToNormalized } from "./opencode-to-normalized";
+
+/** SSE headers for the translated stream reaching the OpenCode surface. */
+export const V2_SSE_HEADERS = {
+  "Content-Type": "text/event-stream",
+  "Cache-Control": "no-cache",
+  Connection: "keep-alive",
+} as const;
+
+export interface V2PipelineOptions {
+  /** Called for streamed protocol errors (finish_reason "error", malformed…). */
+  onSseError?: (message: string) => void;
+}
+
+export interface V2Pipeline {
+  store: SessionToolStateStore;
+  /** OpenAI chat body → GigaChat V2 wire body (session state injected). */
+  chatRequest(openAiBody: OpenAiChatBody, sessionId: string): ChatCompletionV2Request;
+  /** V2 JSON response body → OpenAI chat completion (session state captured). */
+  jsonResponse(v2Body: ChatCompletionV2Response, sessionId: string): OpenAiChatCompletion;
+  /**
+   * V2 HTTP JSON response → OpenAI HTTP JSON response. Non-2xx payloads become
+   * OpenAI-style error envelopes; parse failures become a 502 proxy error
+   * (mirrors the legacy `translateJsonResponse` surface).
+   */
+  jsonResponseFromUpstream(response: Response, sessionId: string): Promise<Response>;
+  /** V2 SSE Response → OpenAI SSE Response (session state captured at flush). */
+  streamingResponse(response: Response, sessionId: string): Response;
+  /** OpenAI-style error envelope for non-2xx upstream responses. */
+  errorEnvelope(
+    status: number,
+    message: string,
+  ): { error: { message: string; type: string; code: number } };
+}
+
+export function createV2Pipeline(options: V2PipelineOptions = {}): V2Pipeline {
+  const store = createToolStateStore();
+  const onSseError = options.onSseError ?? (() => {});
+
+  return {
+    store,
+    chatRequest(openAiBody, sessionId) {
+      const normalized = openCodeToNormalized(openAiBody);
+      const withState = store.applyToRequest(sessionId, normalized);
+      return normalizedToGigaChatV2(withState);
+    },
+    jsonResponse(v2Body, sessionId) {
+      const normalized = gigachatV2ToNormalized(v2Body);
+      store.captureFromResponse(sessionId, normalized);
+      return normalizedToOpenCode(normalized);
+    },
+    streamingResponse(response, sessionId) {
+      if (!response.body) {
+        return new Response("", { status: response.status, headers: V2_SSE_HEADERS });
+      }
+      const stream = response.body.pipeThrough(createSseTransform(sessionId, store, onSseError));
+      return new Response(stream, { status: response.status, headers: V2_SSE_HEADERS });
+    },
+    async jsonResponseFromUpstream(response, sessionId) {
+      let status = response.status;
+      let payload: unknown;
+      try {
+        const v2Body = (await response.json()) as ChatCompletionV2Response & {
+          message?: string;
+          error?: { message?: string };
+        };
+        if (status >= 200 && status < 300) {
+          payload = this.jsonResponse(v2Body, sessionId);
+        } else {
+          const message = v2Body.message ?? v2Body.error?.message ?? JSON.stringify(v2Body);
+          payload = this.errorEnvelope(status, message);
+        }
+      } catch (err) {
+        status = 502;
+        payload = {
+          error: {
+            message: `GigaChat Translation Proxy Error: ${err instanceof Error ? err.message : String(err)}`,
+            type: "api_error",
+            code: 502,
+          },
+        };
+      }
+      return new Response(JSON.stringify(payload), {
+        status: status < 400 ? 200 : status,
+        headers: { "Content-Type": "application/json" },
+      });
+    },
+    errorEnvelope(status, message) {
+      return {
+        error: { message: `GigaChat API Error: ${message}`, type: "api_error", code: status },
+      };
+    },
+  };
+}
+
+function createSseTransform(
+  sessionId: string,
+  store: SessionToolStateStore,
+  onSseError: (message: string) => void,
+): TransformStream<Uint8Array, Uint8Array> {
+  const parser = new SseParser();
+  const machine = new StreamStateMachine();
+  const encoder = new TextEncoder();
+  let meta: StreamMeta | undefined;
+
+  const pushText = (
+    text: string,
+    controller: TransformStreamDefaultController<Uint8Array>,
+  ): void => {
+    const frames = parser.push(text);
+    for (const frame of frames) {
+      const events = machine.push(classifyEvent(frame));
+      if (meta === undefined) {
+        meta = {
+          model: machine.modelName ?? "GigaChat-2-Max",
+          ...(machine.createdAt !== undefined ? { created: Number(machine.createdAt) } : {}),
+        };
+      }
+      const { chunks, errors } = internalToOpenAiChunks(events, meta);
+      for (const chunk of chunks) {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+      }
+      for (const err of errors) onSseError(err);
+    }
+  };
+
+  return new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      pushText(new TextDecoder().decode(chunk), controller);
+    },
+    flush(controller) {
+      // Discharge a truncated tail (EOF without a trailing blank line).
+      for (const frame of parser.flush()) {
+        const events = machine.push(classifyEvent(frame));
+        if (meta === undefined) {
+          meta = {
+            model: machine.modelName ?? "GigaChat-2-Max",
+            ...(machine.createdAt !== undefined ? { created: Number(machine.createdAt) } : {}),
+          };
+        }
+        const { chunks, errors } = internalToOpenAiChunks(events, meta);
+        for (const chunk of chunks) {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+        }
+        for (const err of errors) onSseError(err);
+      }
+      if (machine.lastToolsStateId !== undefined) {
+        store.capture(sessionId, machine.lastToolsStateId);
+      }
+      controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+    },
+  });
+}

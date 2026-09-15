@@ -61,7 +61,19 @@ Statuses follow the definitions from the plan:
 | Session-scoped `tools_state_id` store (lifecycle response→extract→store→next request; session isolation; interleaved captures; no global mutable state) | `src/gigachat/v2/tools/state.ts` | implemented | `tests/unit/tools-state.test.ts` (sequential state, A≠B, concurrency-style interleave, independent stores) |
 | SSE capture of `tools_state_id` from `response.message.done` | `src/streaming/state.ts` (`lastToolsStateId`) | implemented | `tests/unit/streaming-state.test.ts` |
 
-**Note**: the mapping layer and the tools/state modules are implemented and unit-tested. Integration into the plugin request path (`src/v2/`) awaits the runtime phases (streaming + JSON wiring) and live-API credentials; statuses above therefore stay below `SUPPORTED` until integration evidence exists, per the evidence rule.
+## PHASE 9/§22 evidence: thin plugin integration (runtime wiring)
+
+| Capability | Module | Status | Evidence |
+|---|---|---|---|
+| V2 pipeline factory (composes mapping + streaming modules; owns the session-scoped store; plugin stays thin) | `src/translation/v2-pipeline.ts` | implemented | `tests/unit/v2-pipeline.test.ts` |
+| Request flow: OpenAI body → NormalizedRequest → V2 wire (session `tools_state_id` injected) | `createV2Pipeline.chatRequest` | implemented | pipeline tests: V2 body shape, state injection, session isolation (A≠B) |
+| JSON flow: V2 HTTP body → OpenAI completion; session state captured; non-2xx → OpenAI error envelope; parse failure → 502 proxy error | `createV2Pipeline.jsonResponse` / `jsonResponseFromUpstream` | implemented | pipeline tests: 2xx translate+capture, 429 envelope, unparseable → 502 |
+| SSE flow: V2 SSE → OpenAI SSE; `[DONE]` synthesised; state captured at flush; malformed frames → `onSseError` | `createV2Pipeline.streamingResponse` | implemented | pipeline tests: text stream, tool stream (stable call ids), state capture at flush, malformed stream, empty body |
+| Opt-in routing in plugin hooks (`options.v2`); legacy V1 path untouched; chat-only response translation in V2 mode (files/direct pass through) | `src/v2/plugin.ts` | implemented (wired) | plugin diff: V2 branch in `http.request`/`http.response`; legacy `else` branches byte-identical |
+| V2 chat completions endpoint + host rewrite for `api.gigachat.local` | `src/v2/constants.ts` (`GIGACHAT_V2_COMPLETIONS_URL`), `src/v2/hosts.ts` (`targetV2UrlFor`) | implemented | — |
+| Per-session store keying via OpenCode `event.sessionID` (fallback key when absent) | `src/v2/plugin.ts` (`sessionKey`) | implemented | documented in module header |
+
+**Note**: the mapping layer, tools/state modules, and the §22 plugin wiring are implemented and unit-tested. Live-API verification of the wired path still requires real credentials (agents.md stop condition #7); statuses stay below `SUPPORTED` until that evidence exists, per the evidence rule.
 
 ## Next Steps
 1. Verify each row against live API (where possible) using test credentials.
@@ -74,5 +86,5 @@ Statuses follow the definitions from the plan:
 4. After each commit, run `bun run typecheck`, `bun run build`, and any new tests.
 5. Update this matrix as statuses change (only to `SUPPORTED`/`PARTIAL` after evidence).
 
----  
-*Last updated: 2026-09-15 (PHASE 0–4: V2 contract, mapping layer, SSE state machine, tools & session-scoped state delivered; plugin integration pending).*
+---
+*Last updated: 2026-09-15 (PHASE 0–4 + PHASE 9/§22: V2 contract, mapping layer, SSE state machine, tools & session-scoped state, thin plugin wiring delivered; live-API verification pending credentials).*

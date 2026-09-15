@@ -9,6 +9,8 @@ import * as path from "node:path";
 export const GIGACHAT_OAUTH_URL = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth";
 /** GigaChat Chat Completions endpoint */
 export const GIGACHAT_COMPLETIONS_URL = "https://gigachat.devices.sberbank.ru/api/v1/chat/completions";
+/** GigaChat V2 Chat Completions endpoint (V2 target, plan §22) */
+export const GIGACHAT_V2_COMPLETIONS_URL = "https://api.giga.chat/v2/chat/completions";
 /** GigaChat Files (attachments) endpoint */
 export const GIGACHAT_FILES_URL = "https://ngw.devices.sberbank.ru:9443/api/v2/files";
 
