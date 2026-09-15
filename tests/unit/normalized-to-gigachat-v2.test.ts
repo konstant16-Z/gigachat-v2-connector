@@ -2,15 +2,15 @@
  * Unit tests: normalized model → GigaChat V2 request.
  */
 import { describe, expect, test } from "bun:test";
+import type { NormalizedRequest } from "../../src/core/types";
 import { normalizedToGigaChatV2 } from "../../src/translation/normalized-to-gigachat-v2";
 import { basicChatNormalized, jsonSchemaNormalized } from "../fixtures/requests/normalized";
-import type { NormalizedRequest } from "../../src/core/types";
 
 describe("normalized-to-gigachat-v2", () => {
   test("throws a controlled error when model is missing", () => {
-    expect(() =>
-      normalizedToGigaChatV2({ messages: [] }),
-    ).toThrow(/refusing to guess a default model/);
+    expect(() => normalizedToGigaChatV2({ messages: [] })).toThrow(
+      /refusing to guess a default model/,
+    );
   });
 
   test("maps text, tool results and tool calls into keyed V2 content items", () => {

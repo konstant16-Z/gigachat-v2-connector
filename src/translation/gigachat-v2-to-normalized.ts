@@ -6,12 +6,7 @@
  * silently dropped (agents.md RULE 8/13). tool_execution items are surfaced as
  * tool results provisionally until PHASE 7 (builtin tools).
  */
-import { toOpenAiFinishReason } from "../gigachat/v2/finish-reason";
-import type {
-  ChatCompletionV2Response,
-  V2FinishReason,
-  V2ResponseMessage,
-} from "../gigachat/v2/types";
+
 import type {
   NormalizedChoice,
   NormalizedContentPart,
@@ -19,6 +14,12 @@ import type {
   NormalizedToolCall,
   TextPart,
 } from "../core/types";
+import { toOpenAiFinishReason } from "../gigachat/v2/finish-reason";
+import type {
+  ChatCompletionV2Response,
+  V2FinishReason,
+  V2ResponseMessage,
+} from "../gigachat/v2/types";
 import { parseToolArguments } from "./utils";
 
 export function gigachatV2ToNormalized(resp: ChatCompletionV2Response): NormalizedResponse {

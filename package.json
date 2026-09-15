@@ -10,6 +10,8 @@
     "build": "bun build ./src/v2/index.ts --outfile=./dist/index.js --target=bun",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
     "dev": "bun run ./src/v2/index.ts"
   },
   "dependencies": {
@@ -18,6 +20,7 @@
     "uuid": "^11.0.3"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.13",
     "@types/node": "^22.10.0",
     "bun-types": "^1.4.2",
     "typescript": "^5.7.2"

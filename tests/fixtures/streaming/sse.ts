@@ -6,8 +6,9 @@
  * keyed objects without `type`); the spec's internal anomalies are exercised
  * in dedicated fixtures (created_at as string, finish_reason "error").
  */
-import type { StreamMessagePayload, StreamToolPayload } from "../../../src/streaming/events";
+
 import type { V2ResponseContentItem } from "../../../src/gigachat/v2/types";
+import type { StreamMessagePayload, StreamToolPayload } from "../../../src/streaming/events";
 
 function frame(event: string, data: unknown): string {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
@@ -54,8 +55,7 @@ export const toolStream: string =
       { text: "Проверяю погоду" },
       { function_call: { name: "get_weather", arguments: '{"city":"Moscow"}' } },
     ],
-  }) +
-  frame("response.message.done", { finish_reason: "function_call" });
+  }) + frame("response.message.done", { finish_reason: "function_call" });
 
 /* ------------------------------ multiple tools ----------------------------- */
 
@@ -66,8 +66,7 @@ export const multiToolStream: string =
       { function_call: { name: "get_weather", arguments: '{"city":"Moscow"}' } },
       { function_call: { name: "get_time", arguments: '{"city":"Moscow"}' } },
     ],
-  }) +
-  frame("response.message.done", { finish_reason: "function_call" });
+  }) + frame("response.message.done", { finish_reason: "function_call" });
 
 /* --------------------------- tool lifecycle events -------------------------- */
 
@@ -113,7 +112,8 @@ export const unknownEventStream: string = 'event: something.else\ndata: {"a":1}\
 export const emptyDataStream: string = "data:\n\n";
 
 /** Frame cut mid-payload without a trailing blank line (EOF truncation). */
-export const truncatedStream: string = 'event: response.message.delta\ndata: {"content":[{"text":"Прив';
+export const truncatedStream: string =
+  'event: response.message.delta\ndata: {"content":[{"text":"Прив';
 
 /* ------------------------- reused content part type ------------------------ */
 

@@ -48,6 +48,6 @@ describe("normalized-to-opencode", () => {
         },
       ],
     });
-    expect(completion.choices[0].message.tool_calls![0].function.arguments).toBe("{}");
+    expect(completion.choices[0].message.tool_calls?.[0].function.arguments).toBe("{}");
   });
 });

@@ -34,9 +34,7 @@ export function normalizedToGigaChatV2(norm: NormalizedRequest): ChatCompletionV
   }
   const request: ChatCompletionV2Request = {
     model: norm.model,
-    messages: norm.messages.map(
-      (m, index) => toV2Message(m, norm.messages.slice(0, index)),
-    ),
+    messages: norm.messages.map((m, index) => toV2Message(m, norm.messages.slice(0, index))),
   };
   const modelOptions = toModelOptions(norm);
   if (modelOptions) request.model_options = modelOptions;
@@ -48,10 +46,7 @@ export function normalizedToGigaChatV2(norm: NormalizedRequest): ChatCompletionV
   return request;
 }
 
-function toV2Message(
-  m: NormalizedMessage,
-  priorMessages: NormalizedMessage[],
-): V2Message {
+function toV2Message(m: NormalizedMessage, priorMessages: NormalizedMessage[]): V2Message {
   const v2: V2Message = { role: m.role, content: [] };
   if (m.stateId) v2.tool_state_id = m.stateId;
   for (const part of m.content) {
@@ -80,10 +75,7 @@ function toV2Message(
 }
 
 /** name is required by `function_result`; resolve it from prior tool calls. */
-function toFunctionResult(
-  part: ToolResultPart,
-  priorMessages: NormalizedMessage[],
-): V2ContentItem {
+function toFunctionResult(part: ToolResultPart, priorMessages: NormalizedMessage[]): V2ContentItem {
   const name = part.name ?? resolveToolName(part.toolCallId, priorMessages);
   if (!name) {
     throw new Error(

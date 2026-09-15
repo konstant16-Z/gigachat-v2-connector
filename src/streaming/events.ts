@@ -51,7 +51,11 @@ export type GigaChatStreamEvent =
 export function classifyEvent(ev: SseEvent): GigaChatStreamEvent {
   const raw = parseData(ev.data);
   if (raw === undefined) {
-    return { kind: "malformed", reason: `invalid or empty JSON in event "${ev.event}"`, raw: ev.data };
+    return {
+      kind: "malformed",
+      reason: `invalid or empty JSON in event "${ev.event}"`,
+      raw: ev.data,
+    };
   }
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
     return { kind: "malformed", reason: `event "${ev.event}" payload is not an object`, raw };

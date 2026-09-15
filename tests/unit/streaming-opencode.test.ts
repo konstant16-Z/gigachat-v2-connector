@@ -28,7 +28,12 @@ describe("internal → OpenAI chunks", () => {
   test("maps tool calls to chunks with stable id and string arguments", () => {
     const { chunks } = internalToOpenAiChunks(
       [
-        { kind: "tool_call", callId: "call_1", name: "get_weather", arguments: '{"city":"Moscow"}' },
+        {
+          kind: "tool_call",
+          callId: "call_1",
+          name: "get_weather",
+          arguments: '{"city":"Moscow"}',
+        },
         { kind: "done", finishReason: "tool_calls" },
       ],
       meta,
@@ -46,7 +51,10 @@ describe("internal → OpenAI chunks", () => {
 
   test("maps reasoning to reasoning_content delta", () => {
     const { chunks } = internalToOpenAiChunks(
-      [{ kind: "reasoning", text: "думаю" }, { kind: "done", finishReason: "stop" }],
+      [
+        { kind: "reasoning", text: "думаю" },
+        { kind: "done", finishReason: "stop" },
+      ],
       meta,
     );
     expect(chunks[0].choices[0].delta.reasoning_content).toBe("думаю");

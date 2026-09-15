@@ -6,8 +6,8 @@
  * silently dropped.
  */
 import type { NormalizedContentPart } from "./content";
-import type { NormalizedToolCall } from "./tools";
 import type { NormalizedRole } from "./request";
+import type { NormalizedToolCall } from "./tools";
 
 export interface NormalizedChoice {
   index: number;

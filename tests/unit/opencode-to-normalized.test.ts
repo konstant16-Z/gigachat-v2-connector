@@ -17,12 +17,12 @@ describe("opencode-to-normalized", () => {
       ...basicChatRequest,
       // Simulate a stored assistant message carrying V1 state.
       messages: [
-        ...basicChatRequest.messages!.slice(0, 2),
+        ...(basicChatRequest.messages ?? []).slice(0, 2),
         {
-          ...basicChatRequest.messages![2],
+          ...(basicChatRequest.messages ?? [])[2],
           functions_state_id: "state-xyz",
         },
-        ...basicChatRequest.messages!.slice(3),
+        ...(basicChatRequest.messages ?? []).slice(3),
       ],
     });
 
@@ -71,8 +71,8 @@ describe("opencode-to-normalized", () => {
     const assistant = normalized.messages[1];
     expect(assistant.role).toBe("assistant");
     expect(assistant.toolCalls).toHaveLength(1);
-    expect(assistant.toolCalls![0].name).toBe("math");
-    expect(assistant.toolCalls![0].arguments).toEqual({ op: "add", a: 1, b: 1 });
+    expect(assistant.toolCalls?.[0].name).toBe("math");
+    expect(assistant.toolCalls?.[0].arguments).toEqual({ op: "add", a: 1, b: 1 });
     const result = normalized.messages[2];
     expect(result.role).toBe("tool");
     expect(result.content).toEqual([{ type: "tool_result", result: "2" }]);
@@ -109,14 +109,14 @@ describe("opencode-to-normalized", () => {
   });
 
   test("throws a controlled error on unsupported tool_choice required", () => {
-    expect(() =>
-      openCodeToNormalized({ messages: [], tool_choice: "required" }),
-    ).toThrow(/unsupported tool_choice "required"/);
+    expect(() => openCodeToNormalized({ messages: [], tool_choice: "required" })).toThrow(
+      /unsupported tool_choice "required"/,
+    );
   });
 
   test("throws a controlled error on unsupported reasoning_effort", () => {
-    expect(() =>
-      openCodeToNormalized({ messages: [], reasoning_effort: "extreme" }),
-    ).toThrow(/unsupported reasoning_effort "extreme"/);
+    expect(() => openCodeToNormalized({ messages: [], reasoning_effort: "extreme" })).toThrow(
+      /unsupported reasoning_effort "extreme"/,
+    );
   });
 });

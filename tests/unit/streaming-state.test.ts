@@ -3,9 +3,9 @@
  * Full pipeline: raw SSE text → SseParser → classifyEvent → StreamStateMachine.
  */
 import { describe, expect, test } from "bun:test";
-import { SseParser } from "../../src/streaming/parser";
 import { classifyEvent } from "../../src/streaming/events";
-import { StreamStateMachine, type InternalStreamEvent } from "../../src/streaming/state";
+import { SseParser } from "../../src/streaming/parser";
+import { type InternalStreamEvent, StreamStateMachine } from "../../src/streaming/state";
 import {
   callErrorFinishStream,
   emptyContentDeltaStream,
@@ -107,7 +107,9 @@ describe("stream state machine", () => {
     const first = machine.push(classifyEvent(parser.push(unknownEventStream)[0]));
     expect(first[0]).toEqual({ kind: "error", message: 'unknown stream event "something.else"' });
     const done = machine.push(
-      classifyEvent(parser.push('event: response.message.done\ndata: {"finish_reason":"stop"}\n\n')[0]),
+      classifyEvent(
+        parser.push('event: response.message.done\ndata: {"finish_reason":"stop"}\n\n')[0],
+      ),
     );
     expect(done.at(-1)?.kind).toBe("done");
   });

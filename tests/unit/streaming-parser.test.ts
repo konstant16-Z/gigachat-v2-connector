@@ -2,7 +2,7 @@
  * Unit tests: incremental SSE parser (plan §12 — parser behaviors).
  */
 import { describe, expect, test } from "bun:test";
-import { SseParser, type SseEvent } from "../../src/streaming/parser";
+import { type SseEvent, SseParser } from "../../src/streaming/parser";
 
 function parseAll(text: string, chunkSize?: number): SseEvent[] {
   const parser = new SseParser();
@@ -37,7 +37,7 @@ describe("SseParser", () => {
   });
 
   test("handles CRLF line endings", () => {
-    const events = parseAll("event: response.message.delta\r\ndata: {\"a\":1}\r\n\r\n");
+    const events = parseAll('event: response.message.delta\r\ndata: {"a":1}\r\n\r\n');
     expect(events[0].data).toBe('{"a":1}');
   });
 
@@ -56,7 +56,7 @@ describe("SseParser", () => {
     const events = parseAll(
       ": keep-alive\n" +
         "unknown: field\n" +
-        'event: response.message.delta\n' +
+        "event: response.message.delta\n" +
         'data: {"a":1}\n' +
         "no-colon-line\n\n",
     );

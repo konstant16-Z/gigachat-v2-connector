@@ -8,9 +8,10 @@
  * events and post-done input are ignored; unknown/malformed events become
  * controlled `error` events instead of crashes (agents.md §15).
  */
+
+import type { NormalizedUsage } from "../core/types";
 import { toOpenAiFinishReason } from "../gigachat/v2/finish-reason";
 import type { V2ResponseUsage } from "../gigachat/v2/types";
-import type { NormalizedUsage } from "../core/types";
 import type { GigaChatStreamEvent, StreamMessagePayload } from "./events";
 
 export type InternalStreamEvent =

@@ -104,7 +104,7 @@ export function openCodeSseBody(chunks: OpenAiChatChunk[]): string {
   return body;
 }
 
-function maybeRole(roleStarted: boolean): { role: "assistant" } | {} {
+function maybeRole(roleStarted: boolean): { role?: "assistant" } {
   return roleStarted ? {} : { role: "assistant" as const };
 }
 

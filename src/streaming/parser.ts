@@ -36,9 +36,10 @@ export class SseParser {
   push(chunk: string): SseEvent[] {
     this.buffer += chunk;
     const events: SseEvent[] = [];
-    let match: RegExpExecArray | null;
     const newline = /\r\n|\n/;
-    while ((match = newline.exec(this.buffer)) !== null) {
+    for (;;) {
+      const match = newline.exec(this.buffer);
+      if (match === null) break;
       const line = this.buffer.slice(0, match.index);
       this.buffer = this.buffer.slice(match.index + match[0].length);
       const ev = this.processLine(line);
@@ -66,7 +67,11 @@ export class SseParser {
     if (line === "") {
       // Frame boundary. A blank line with nothing pending is a no-op
       // (keep-alive heartbeat); only frames carrying fields are dispatched.
-      if (this.dataLines.length === 0 && this.eventType === undefined && this.eventId === undefined) {
+      if (
+        this.dataLines.length === 0 &&
+        this.eventType === undefined &&
+        this.eventId === undefined
+      ) {
         return null;
       }
       return this.dispatchFrame(true);

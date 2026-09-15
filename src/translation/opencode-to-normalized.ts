@@ -2,7 +2,7 @@
  * OpenAI-compatible request → normalized model (agents.md RULE 13: no silent
  * translation; unsupported values raise controlled errors instead of guesses).
  */
-import type { OpenAiChatBody, OpenAiMessage } from "../types/gigachat";
+
 import type {
   NormalizedContentPart,
   NormalizedMessage,
@@ -14,6 +14,7 @@ import type {
   NormalizedToolCall,
   NormalizedToolChoice,
 } from "../core/types";
+import type { OpenAiChatBody, OpenAiMessage } from "../types/gigachat";
 import { parseToolArguments } from "./utils";
 
 export function openCodeToNormalized(body: OpenAiChatBody): NormalizedRequest {
@@ -149,9 +150,7 @@ function toNormalizedToolChoice(
   if (choice === undefined) return undefined;
   if (choice === "none" || choice === "auto") return choice;
   if (choice === "required") {
-    throw new Error(
-      `unsupported tool_choice "required": V2 tool_config supports auto|none|forced`,
-    );
+    throw new Error(`unsupported tool_choice "required": V2 tool_config supports auto|none|forced`);
   }
   if (typeof choice === "object") {
     const name = choice.function?.name;

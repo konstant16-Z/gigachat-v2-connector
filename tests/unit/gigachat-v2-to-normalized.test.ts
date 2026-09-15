@@ -2,13 +2,9 @@
  * Unit tests: GigaChat V2 response → normalized model.
  */
 import { describe, expect, test } from "bun:test";
-import { gigachatV2ToNormalized } from "../../src/translation/gigachat-v2-to-normalized";
-import {
-  blacklistV2Response,
-  filesV2Response,
-  toolCallV2Response,
-} from "../fixtures/responses/v2";
 import type { ChatCompletionV2Response } from "../../src/gigachat/v2/types";
+import { gigachatV2ToNormalized } from "../../src/translation/gigachat-v2-to-normalized";
+import { blacklistV2Response, filesV2Response, toolCallV2Response } from "../fixtures/responses/v2";
 
 describe("gigachat-v2-to-normalized", () => {
   test("maps text, tool_calls finish reason, usage and thread metadata", () => {
@@ -21,7 +17,7 @@ describe("gigachat-v2-to-normalized", () => {
     expect(choice.finishReason).toBe("tool_calls");
     expect(choice.message.content).toBe("Let me check.");
     expect(choice.message.toolCalls).toHaveLength(1);
-    expect(choice.message.toolCalls![0]).toMatchObject({
+    expect(choice.message.toolCalls?.[0]).toMatchObject({
       name: "get_weather",
       arguments: { city: "Moscow" },
     });
@@ -37,7 +33,7 @@ describe("gigachat-v2-to-normalized", () => {
 
   test("parses function_call string arguments into an arguments object", () => {
     const normalized = gigachatV2ToNormalized(toolCallV2Response);
-    expect(normalized.choices[0].message.toolCalls![0].arguments).toEqual({ city: "Moscow" });
+    expect(normalized.choices[0].message.toolCalls?.[0].arguments).toEqual({ city: "Moscow" });
   });
 
   test("preserves files, tool_execution and inline_data without dropping content", () => {

@@ -5,8 +5,9 @@
  * token round-trips through OpenCode's stored messages (request side reads it
  * back in opencode-to-normalized).
  */
-import type { GigaChatToolCall, OpenAiChatCompletion } from "../types/gigachat";
+
 import type { NormalizedResponse, NormalizedToolCall } from "../core/types";
+import type { GigaChatToolCall, OpenAiChatCompletion } from "../types/gigachat";
 
 export function normalizedToOpenCode(norm: NormalizedResponse): OpenAiChatCompletion {
   return {

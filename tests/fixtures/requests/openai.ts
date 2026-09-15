@@ -63,9 +63,7 @@ export const legacyFunctionRequest: OpenAiChatBody = {
     },
     { role: "function", name: "math", content: "2" },
   ],
-  functions: [
-    { name: "math", description: "Math helper", parameters: { type: "object" } },
-  ],
+  functions: [{ name: "math", description: "Math helper", parameters: { type: "object" } }],
 };
 
 export const imageContentRequest: OpenAiChatBody = {

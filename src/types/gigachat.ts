@@ -16,7 +16,13 @@ export interface GigaChatToolCall {
 
 export interface OpenAiMessage {
   role: "system" | "assistant" | "user" | "tool" | "function" | "developer";
-  content?: string | null | Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string; detail?: string } }>;
+  content?:
+    | string
+    | null
+    | Array<
+        | { type: "text"; text: string }
+        | { type: "image_url"; image_url: { url: string; detail?: string } }
+      >;
   tool_calls?: GigaChatToolCall[];
   tool_call_id?: string;
   name?: string;
