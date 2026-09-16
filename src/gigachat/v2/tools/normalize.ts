@@ -13,7 +13,11 @@
  * The pure mappers keep passing names through unchanged; the registry is the
  * primitive the session-aware integration uses at the boundary.
  */
-import type { NormalizedToolCall } from "../../../core/types";
+import type {
+  NormalizedRequest,
+  NormalizedResponse,
+  NormalizedToolCall,
+} from "../../../core/types";
 
 /**
  * Live-verified function name constraint (2026-09-15): "Only Latin letters
@@ -39,6 +43,65 @@ export function validateFunctionName(name: string): string | null {
     );
   }
   return null;
+}
+
+/**
+ * Pure request-side aliasing: apply a registry to every tool name that will
+ * cross the wire — declarations, assistant calls and tool-result names —
+ * skipping builtin entries (their ids are fixed at the boundary). Returns a
+ * new shallow request; spec-valid names pass through unchanged.
+ *
+ * Legacy parity (§23): the V1 connector aliased arbitrary OpenAI tool names
+ * (e.g. `shell --- workdir /home/user`) via a *global* map; V2 does the same
+ * per session through the registry passed by the integration, so no V1 working
+ * behavior is lost and nothing lives at module scope (agents.md §14).
+ */
+export function aliasNamesInRequest(
+  request: NormalizedRequest,
+  registry: ToolNameRegistry,
+): NormalizedRequest {
+  const tools = request.tools?.map((tool) => {
+    if (tool.builtin !== undefined) return tool;
+    const name = registry.aliasFor(tool.name);
+    return name === tool.name ? tool : { ...tool, name };
+  });
+  const messages = request.messages.map((message) => {
+    const content = message.content.map((part) => {
+      if (part.type === "tool_result" && part.name !== undefined) {
+        const name = registry.aliasFor(part.name);
+        return name === part.name ? part : { ...part, name };
+      }
+      return part;
+    });
+    const toolCalls = message.toolCalls?.map((call) => {
+      const name = registry.aliasFor(call.name);
+      return name === call.name ? call : { ...call, name };
+    });
+    return {
+      ...message,
+      content,
+      ...(toolCalls !== undefined ? { toolCalls } : {}),
+    };
+  });
+  return { ...request, tools: tools ?? request.tools, messages };
+}
+
+/**
+ * Pure response-side restoration: reverse every V2 alias back to the original
+ * tool name (legacy `getOriginalToolName` parity, session-scoped). Names that
+ * were never aliased pass through unchanged.
+ */
+export function restoreNamesInResponse(
+  response: NormalizedResponse,
+  registry: ToolNameRegistry,
+): NormalizedResponse {
+  const choices = response.choices.map((choice) => {
+    const toolCalls = choice.message.toolCalls?.map(
+      (call): NormalizedToolCall => ({ ...call, name: registry.originalOf(call.name) }),
+    );
+    return { ...choice, message: { ...choice.message, toolCalls } };
+  });
+  return { ...response, choices };
 }
 
 /** A tool-call reference used for id-based linkage (name resolution). */

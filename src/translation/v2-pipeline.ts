@@ -13,12 +13,17 @@
  * state (agents.md §14).
  */
 
+import {
+  aliasNamesInRequest,
+  restoreNamesInResponse,
+  ToolNameRegistry,
+} from "../gigachat/v2/tools/normalize";
 import type { SessionToolStateStore } from "../gigachat/v2/tools/state";
 import { createToolStateStore } from "../gigachat/v2/tools/state";
 import type { ChatCompletionV2Request, ChatCompletionV2Response } from "../gigachat/v2/types";
 import { classifyEvent } from "../streaming/events";
 import type { StreamMeta } from "../streaming/opencode";
-import { internalToOpenAiChunks } from "../streaming/opencode";
+import { internalToOpenAiChunks, restoreChunkNames } from "../streaming/opencode";
 import { SseParser } from "../streaming/parser";
 import { StreamStateMachine } from "../streaming/state";
 import type { OpenAiChatBody, OpenAiChatCompletion } from "../types/gigachat";
@@ -65,6 +70,17 @@ export interface V2Pipeline {
 export function createV2Pipeline(options: V2PipelineOptions = {}): V2Pipeline {
   const store = createToolStateStore();
   const onSseError = options.onSseError ?? (() => {});
+  // Session-scoped tool-name registries (legacy getToolAlias parity, §23):
+  // builtins pass through, unsafe names become deterministic tool_<n> aliases.
+  const registries = new Map<string, ToolNameRegistry>();
+  const registryFor = (sessionId: string): ToolNameRegistry => {
+    let registry = registries.get(sessionId);
+    if (registry === undefined) {
+      registry = new ToolNameRegistry();
+      registries.set(sessionId, registry);
+    }
+    return registry;
+  };
 
   return {
     store,
@@ -81,18 +97,26 @@ export function createV2Pipeline(options: V2PipelineOptions = {}): V2Pipeline {
             .getAccessToken()
             .then(({ token }) => uploadDataUrlsInRequest(withState, token))
         : withState;
-      return normalizedToGigaChatV2(withFiles);
+      // Legacy parity: alias V2-unsafe tool names (declarations + calls +
+      // results) per session, exactly like the V1 connector's global registry.
+      const withNames = aliasNamesInRequest(withFiles, registryFor(sessionId));
+      return normalizedToGigaChatV2(withNames);
     },
     jsonResponse(v2Body, sessionId) {
       const normalized = gigachatV2ToNormalized(v2Body);
-      store.captureFromResponse(sessionId, normalized);
-      return normalizedToOpenCode(normalized);
+      const restored = restoreNamesInResponse(normalized, registryFor(sessionId));
+      store.captureFromResponse(sessionId, restored);
+      return normalizedToOpenCode(restored);
     },
     streamingResponse(response, sessionId) {
       if (!response.body) {
         return new Response("", { status: response.status, headers: V2_SSE_HEADERS });
       }
-      const stream = response.body.pipeThrough(createSseTransform(sessionId, store, onSseError));
+      const stream = response.body.pipeThrough(
+        createSseTransform(sessionId, store, onSseError, (name) =>
+          registryFor(sessionId).originalOf(name),
+        ),
+      );
       return new Response(stream, { status: response.status, headers: V2_SSE_HEADERS });
     },
     async jsonResponseFromUpstream(response, sessionId) {
@@ -136,6 +160,7 @@ function createSseTransform(
   sessionId: string,
   store: SessionToolStateStore,
   onSseError: (message: string) => void,
+  restoreName: (name: string) => string,
 ): TransformStream<Uint8Array, Uint8Array> {
   const parser = new SseParser();
   const machine = new StreamStateMachine();
@@ -157,7 +182,9 @@ function createSseTransform(
       }
       const { chunks, errors } = internalToOpenAiChunks(events, meta);
       for (const chunk of chunks) {
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+        controller.enqueue(
+          encoder.encode(`data: ${JSON.stringify(restoreChunkNames(chunk, restoreName))}\n\n`),
+        );
       }
       for (const err of errors) onSseError(err);
     }
@@ -179,7 +206,9 @@ function createSseTransform(
         }
         const { chunks, errors } = internalToOpenAiChunks(events, meta);
         for (const chunk of chunks) {
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+          controller.enqueue(
+            encoder.encode(`data: ${JSON.stringify(restoreChunkNames(chunk, restoreName))}\n\n`),
+          );
         }
         for (const err of errors) onSseError(err);
       }

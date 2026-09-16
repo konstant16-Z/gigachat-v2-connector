@@ -104,6 +104,27 @@ export function openCodeSseBody(chunks: OpenAiChatChunk[]): string {
   return body;
 }
 
+/**
+ * Restore original tool names inside a chunk's `tool_calls` (legacy
+ * `getOriginalToolName` parity, §23): names the session registry aliased to
+ * `tool_<n>` on the request side are reversed to the OpenCode-facing name.
+ * Chunks without tool calls pass through unchanged.
+ */
+export function restoreChunkNames(
+  chunk: OpenAiChatChunk,
+  resolve: (name: string) => string,
+): OpenAiChatChunk {
+  const choices = chunk.choices.map((choice) => {
+    const toolCalls = choice.delta.tool_calls?.map((call) => ({
+      ...call,
+      function: { ...call.function, name: resolve(call.function.name) },
+    }));
+    if (toolCalls === undefined) return choice;
+    return { ...choice, delta: { ...choice.delta, tool_calls: toolCalls } };
+  });
+  return { ...chunk, choices };
+}
+
 function maybeRole(roleStarted: boolean): { role?: "assistant" } {
   return roleStarted ? {} : { role: "assistant" as const };
 }
