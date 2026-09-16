@@ -158,8 +158,8 @@ describe("request mapping enforces the identity invariant", () => {
     });
     const results = v2.messages[1].content;
     expect(results).toEqual([
-      { function_result: { name: "get_time", result: '{"hour":12}' } },
-      { function_result: { name: "get_weather", result: '{"temp":-5}' } },
+      { function_result: { name: "get_time", result: JSON.stringify('{"hour":12}') } },
+      { function_result: { name: "get_weather", result: JSON.stringify('{"temp":-5}') } },
     ]);
   });
 });

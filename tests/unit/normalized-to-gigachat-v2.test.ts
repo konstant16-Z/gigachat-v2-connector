@@ -25,11 +25,18 @@ describe("normalized-to-gigachat-v2", () => {
       { function_call: { name: "get_weather", arguments: { city: "Moscow" } } },
     ]);
 
-    // tool message maps to role "function" (live API rejects "tool" with 400)
+    // tool message maps to role "function" (live API rejects "tool" with 400);
+    // the result is a JSON value wrapped in a string (spec + live API 400 on
+    // raw text with "invalid function result … JSON parse error")
     const tool = v2.messages[3];
     expect(tool.role).toBe("function");
     expect(tool.content).toEqual([
-      { function_result: { name: "get_weather", result: '{"temp":-5,"unit":"C"}' } },
+      {
+        function_result: {
+          name: "get_weather",
+          result: JSON.stringify('{"temp":-5,"unit":"C"}'),
+        },
+      },
     ]);
   });
 

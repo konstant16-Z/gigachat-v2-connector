@@ -6,6 +6,9 @@
  * API observations (docs/LIVE_API_OBSERVATIONS.md, 2026-09-15):
  * - content items are keyed objects WITHOUT a `type` discriminator;
  * - tool results map to role `function` with `function_result {name, result}`;
+ * - `function_result.result` is a **JSON value wrapped in a string** (spec:
+ *   FunctionMessage.content, Message.function_result.result — the live API
+ *   400s raw text with "invalid function result … JSON parse error");
  * - `function_call.arguments` is an **object** on the wire (live API rejects
  *   a JSON string with 400, despite the spec typing it as string);
  * - `tool_choice none|auto|forced` maps to `tool_config.mode`;
@@ -110,7 +113,15 @@ function toV2Message(m: NormalizedMessage, priorMessages: NormalizedMessage[]): 
           // error instead of a silent empty name.
           throw new Error("internal: tool_result without resolved linkage");
         }
-        v2.content.push({ function_result: { name: linked, result: part.result } });
+        v2.content.push({
+          function_result: {
+            name: linked,
+            // Spec: the result is a JSON value wrapped in a string. The live
+            // API rejects raw tool text (400 "invalid function result for
+            // function … JSON parse error at line 1 column 1").
+            result: JSON.stringify(part.result),
+          },
+        });
         break;
       }
     }
