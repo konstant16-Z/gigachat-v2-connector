@@ -316,6 +316,12 @@ export const plugin = {
             log(`Upstream ${String(current.status)} after attempt ${attempt + 1}/${retryConfig.maxAttempts}`);
           }
           event.response = current;
+        }
+        // Always clean up the pending-request snapshot once we've processed
+        // the response (retryable or not) so the Map doesn't leak entries
+        // for non-retryable statuses (200/400/422) — plan §29: consistent
+        // session state after cancellation/response.
+        if (stored) {
           pendingRequests.delete(rquid);
         }
 
@@ -349,3 +355,12 @@ export const plugin = {
 };
 
 export default plugin;
+
+/**
+ * Diagnostic: number of pending request snapshots awaiting response translation.
+ * Used in tests to verify plan §29 consistent-session-state cleanup.
+ * Safe to call in production (returns a plain count).
+ */
+export function pendingRequestCount(): number {
+  return pendingRequests.size;
+}
