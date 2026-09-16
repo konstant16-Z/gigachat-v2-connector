@@ -5,6 +5,7 @@ import { GIGACHAT_COMPLETIONS_URL, GIGACHAT_FILES_URL, GIGACHAT_V2_COMPLETIONS_U
 
 export const gigaHosts = new Set<string>([
   "api.gigachat.local",
+  "api.giga.chat",
   "ngw.devices.sberbank.ru",
   "ngw.devices.sberbank.ru:9443",
   "gigachat.devices.sberbank.ru"
@@ -70,6 +71,6 @@ export function targetUrlFor(requestUrl: string, isChat: boolean, isFiles: boole
 /** Rewrite the local dev endpoint to the V2 Chat Completions API. */
 export function targetV2UrlFor(requestUrl: string): string {
   const host = tryHost(requestUrl);
-  if (host === "api.gigachat.local") return GIGACHAT_V2_COMPLETIONS_URL;
+  if (host && gigaHosts.has(host)) return GIGACHAT_V2_COMPLETIONS_URL;
   return requestUrl;
 }
