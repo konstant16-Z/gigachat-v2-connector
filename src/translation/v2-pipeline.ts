@@ -77,7 +77,9 @@ export function createV2Pipeline(options: V2PipelineOptions = {}): V2Pipeline {
         m.content.some((p) => p.type === "image" && p.url.startsWith("data:")),
       );
       const withFiles = hasDataUrls
-        ? await authManager.getAccessToken().then(({ token }) => uploadDataUrlsInRequest(withState, token))
+        ? await authManager
+            .getAccessToken()
+            .then(({ token }) => uploadDataUrlsInRequest(withState, token))
         : withState;
       return normalizedToGigaChatV2(withFiles);
     },
