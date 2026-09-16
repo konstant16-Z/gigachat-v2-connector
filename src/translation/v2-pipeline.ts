@@ -112,11 +112,10 @@ export function createV2Pipeline(options: V2PipelineOptions = {}): V2Pipeline {
       if (!response.body) {
         return new Response("", { status: response.status, headers: V2_SSE_HEADERS });
       }
-      const stream = response.body.pipeThrough(
-        createSseTransform(sessionId, store, onSseError, (name) =>
-          registryFor(sessionId).originalOf(name),
-        ),
+      const transform = createSseTransform(sessionId, store, onSseError, (name) =>
+        registryFor(sessionId).originalOf(name),
       );
+      const stream = pipeWithCancel(response.body, transform);
       return new Response(stream, { status: response.status, headers: V2_SSE_HEADERS });
     },
     async jsonResponseFromUpstream(response, sessionId) {
@@ -216,6 +215,61 @@ function createSseTransform(
         store.capture(sessionId, machine.lastToolsStateId);
       }
       controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+    },
+  });
+}
+
+/**
+ * Pipe `source` through `transform` with guaranteed cancellation propagation
+ * (plan §29 — stream abort).
+ *
+ * Runtime pipeThrough implementations do not always forward a consumer cancel
+ * to the piped source (verified on Bun 1.4: neither `reader.cancel()` on the
+ * piped stream nor cancelling a `Response` wrapping it reaches the source),
+ * which would leak the upstream GigaChat connection on client abort. This
+ * manual pump is equivalent to pipeThrough for the happy path (source →
+ * writer, transform readable → consumer) and additionally cancels both the
+ * transform output and the source reader explicitly when the consumer aborts.
+ */
+function pipeWithCancel(
+  source: ReadableStream<Uint8Array>,
+  transform: TransformStream<Uint8Array, Uint8Array>,
+): ReadableStream<Uint8Array> {
+  const sourceReader = source.getReader();
+  const writer = transform.writable.getWriter();
+  const reader = transform.readable.getReader();
+
+  void (async () => {
+    try {
+      while (true) {
+        const { done, value } = await sourceReader.read();
+        if (done) break;
+        await writer.write(value);
+      }
+      await writer.close();
+    } catch {
+      try {
+        await writer.abort();
+      } catch {}
+    }
+  })();
+
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      const { done, value } = await reader.read();
+      if (done) {
+        controller.close();
+        return;
+      }
+      controller.enqueue(value);
+    },
+    async cancel(reason) {
+      try {
+        await reader.cancel(reason);
+      } catch {}
+      try {
+        await sourceReader.cancel(reason);
+      } catch {}
     },
   });
 }
