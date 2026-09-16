@@ -24,6 +24,7 @@ import type {
 import { parseToolArguments } from "./utils";
 
 export function gigachatV2ToNormalized(resp: ChatCompletionV2Response): NormalizedResponse {
+  assertResponseEnvelope(resp);
   return {
     // V2 messages carry no response id; generate one at the boundary (documented).
     id: crypto.randomUUID(),
@@ -35,11 +36,30 @@ export function gigachatV2ToNormalized(resp: ChatCompletionV2Response): Normaliz
   };
 }
 
+/**
+ * §28 malformed-response rule: a broken envelope is a controlled error, never
+ * an undefined/null crash ("Cannot read properties of undefined(messages)…").
+ */
+function assertResponseEnvelope(resp: ChatCompletionV2Response): void {
+  if (typeof resp !== "object" || resp === null || Array.isArray(resp)) {
+    throw new Error("malformed V2 response: expected a JSON object");
+  }
+  if (!Array.isArray(resp.messages)) {
+    throw new Error('malformed V2 response: "messages" is missing or not an array');
+  }
+}
+
 function toChoice(
   m: V2ResponseMessage,
   index: number,
   finishReason: V2FinishReason,
 ): NormalizedChoice {
+  if (typeof m !== "object" || m === null || Array.isArray(m)) {
+    throw new Error(`malformed V2 response: message at index ${index} is not an object`);
+  }
+  if (!Array.isArray(m.content)) {
+    throw new Error(`malformed V2 response: message at index ${index} is missing a content array`);
+  }
   const parts: NormalizedContentPart[] = [];
   const toolCalls: NormalizedToolCall[] = [];
   const texts: string[] = [];
@@ -50,26 +70,46 @@ function toChoice(
       texts.push(item.text);
       parts.push({ type: "text", text: item.text } satisfies TextPart);
     }
-    for (const file of item.files ?? []) {
-      parts.push({ type: "file", id: file.id ?? "", target: file.target, mime: file.mime });
+    // The wire is untrusted: a non-array `files` must not leak into for..of.
+    if (Array.isArray(item.files)) {
+      for (const file of item.files) {
+        parts.push({ type: "file", id: file.id ?? "", target: file.target, mime: file.mime });
+      }
     }
     if (item.function_call !== undefined) {
+      // §28: malformed tool call → controlled error.
+      const fc = item.function_call as unknown;
+      if (typeof fc !== "object" || fc === null) {
+        throw new Error("malformed V2 response: function_call is not an object");
+      }
+      const rec = fc as { id?: unknown; name?: unknown; arguments?: unknown };
+      if (typeof rec.name !== "string" || rec.name.length === 0) {
+        throw new Error("malformed V2 response: function_call without a name");
+      }
       toolCalls.push({
         // Live API returns an id on function_call responses (verified); the
         // spec has none — fall back to a generated id for round-trip linkage.
-        id: item.function_call.id ?? crypto.randomUUID(),
-        name: item.function_call.name,
-        arguments: parseToolArguments(item.function_call.arguments),
+        id: typeof rec.id === "string" ? rec.id : crypto.randomUUID(),
+        name: rec.name,
+        arguments: parseToolArguments(
+          rec.arguments as string | Record<string, unknown> | undefined,
+        ),
       });
     }
     if (item.tool_execution !== undefined) {
+      // §28: malformed content item → controlled error.
+      const te = item.tool_execution as unknown;
+      if (typeof te !== "object" || te === null) {
+        throw new Error("malformed V2 response: tool_execution is not an object");
+      }
+      const rec = te as Record<string, unknown>;
       parts.push({
         type: "tool_result",
-        name: item.tool_execution.name,
+        name: typeof rec.name === "string" ? rec.name : "",
         result: JSON.stringify({
-          status: item.tool_execution.status,
-          seconds_left: item.tool_execution.seconds_left,
-          censored: item.tool_execution.censored,
+          status: rec.status,
+          seconds_left: rec.seconds_left,
+          censored: rec.censored,
         }),
       });
     }

@@ -103,22 +103,15 @@ export class StreamStateMachine {
         out.push({ kind: "text", text: item.text });
       }
       if (item.function_call !== undefined) {
-        const call = this.trackCall(item.function_call.name, item.function_call.arguments);
-        this.emittedCallNames.add(item.function_call.name);
-        out.push({ kind: "tool_call", callId: call.callId, name: call.name, arguments: call.args });
+        this.pushFunctionCall(item, out, false);
       }
-      if (item.files !== undefined && item.files.length > 0) {
+      if (Array.isArray(item.files) && item.files.length > 0) {
+        // Untrusted wire: only arrays yield file ids (a malformed `files`
+        // value is skipped, never crash nor leak into iteration).
         this.lastFileIds = item.files.map((f) => f.id ?? "").filter((id) => id.length > 0);
       }
       if (item.tool_execution !== undefined) {
-        const te = item.tool_execution;
-        out.push({
-          kind: "tool_completed",
-          ...(te.name !== undefined ? { name: te.name } : {}),
-          ...(te.status !== undefined ? { status: te.status } : {}),
-          ...(te.seconds_left !== undefined ? { seconds_left: te.seconds_left } : {}),
-          ...(te.censored !== undefined ? { censored: te.censored } : {}),
-        });
+        this.pushToolExecution(item, out);
       }
     }
     return out;
@@ -132,20 +125,11 @@ export class StreamStateMachine {
     // only inside the done payload's messages, without preceding delta frames —
     // surface them here, skipping call names already emitted via deltas.
     for (const item of p.content ?? []) {
-      if (item.function_call !== undefined && !this.emittedCallNames.has(item.function_call.name)) {
-        const call = this.trackCall(item.function_call.name, item.function_call.arguments);
-        this.emittedCallNames.add(item.function_call.name);
-        out.push({ kind: "tool_call", callId: call.callId, name: call.name, arguments: call.args });
+      if (item.function_call !== undefined) {
+        this.pushFunctionCall(item, out, true);
       }
       if (item.tool_execution !== undefined) {
-        const te = item.tool_execution;
-        out.push({
-          kind: "tool_completed",
-          ...(te.name !== undefined ? { name: te.name } : {}),
-          ...(te.status !== undefined ? { status: te.status } : {}),
-          ...(te.seconds_left !== undefined ? { seconds_left: te.seconds_left } : {}),
-          ...(te.censored !== undefined ? { censored: te.censored } : {}),
-        });
+        this.pushToolExecution(item, out);
       }
     }
     if (!this.usageEmitted && p.usage !== undefined) {
@@ -163,6 +147,69 @@ export class StreamStateMachine {
     });
     this.doneEmitted = true;
     return out;
+  }
+
+  /**
+   * §28 malformed-response rule: a content-item `function_call` that is not a
+   * non-null object, or that lacks a name, becomes a controlled `error` event
+   * instead of a null/undefined crash. `dedupe` skips calls already surfaced
+   * via deltas (done payloads re-deliver the final call).
+   */
+  private pushFunctionCall(
+    item: { function_call?: unknown },
+    out: InternalStreamEvent[],
+    dedupe: boolean,
+  ): void {
+    const fc = item.function_call as unknown;
+    if (typeof fc !== "object" || fc === null) {
+      out.push({
+        kind: "error",
+        message: "malformed stream event: function_call is not an object",
+      });
+      return;
+    }
+    const rec = fc as { name?: unknown; arguments?: unknown };
+    if (typeof rec.name !== "string" || rec.name.length === 0) {
+      out.push({ kind: "error", message: "malformed stream event: function_call without a name" });
+      return;
+    }
+    if (dedupe && this.emittedCallNames.has(rec.name)) return;
+    // Arguments may be a JSON string (spec/legacy), an object (live API), or
+    // absent (split delta) — normalise to the internal JSON string; "" carries
+    // "still pending" for the split-call merge in trackCall().
+    const args =
+      typeof rec.arguments === "string"
+        ? rec.arguments
+        : rec.arguments === undefined || rec.arguments === null
+          ? ""
+          : JSON.stringify(rec.arguments);
+    const call = this.trackCall(rec.name, args);
+    this.emittedCallNames.add(call.name);
+    out.push({ kind: "tool_call", callId: call.callId, name: call.name, arguments: call.args });
+  }
+
+  private pushToolExecution(item: { tool_execution?: unknown }, out: InternalStreamEvent[]): void {
+    const te = item.tool_execution as unknown;
+    if (typeof te !== "object" || te === null) {
+      out.push({
+        kind: "error",
+        message: "malformed stream event: tool_execution is not an object",
+      });
+      return;
+    }
+    const rec = te as {
+      name?: unknown;
+      status?: unknown;
+      seconds_left?: unknown;
+      censored?: unknown;
+    };
+    out.push({
+      kind: "tool_completed",
+      ...(typeof rec.name === "string" ? { name: rec.name } : {}),
+      ...(typeof rec.status === "string" ? { status: rec.status } : {}),
+      ...(typeof rec.seconds_left === "number" ? { seconds_left: rec.seconds_left } : {}),
+      ...(typeof rec.censored === "boolean" ? { censored: rec.censored } : {}),
+    });
   }
 
   /**
