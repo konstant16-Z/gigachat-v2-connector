@@ -221,3 +221,25 @@ Live-паттерн: `^[A-Za-z][A-Za-z0-9_.-]*$` (**допускает `-` и `.
 - Косвенное подтверждение: request `content` должен быть **массивом keyed-объектов**; строка → 400 `Your request contains invalid JSON syntax` (generic-сообщение валидатора — энвольвер на любое нарушение тела).
 
 Противоречие плану: план §13 заявлял поддержку `json_object` — live показывает, что его нет в V2 (`Unknown type "json_object" in response_format`).
+
+---
+
+## 10. Files API — live-проверка (2026-09-16, `scripts/probe-files-api.ts`)
+
+Зонд: загрузка 1x1 PNG через `multipart/form-data` + использование `file.id` в chat completion.
+
+| Endpoint | Upload | Chat completion с `file.id` |
+|---|---|---|
+| `https://api.giga.chat/v1/files` | **200** ✅ | **200** ✅ (модель вернула описание изображения) |
+| `https://api.giga.chat/v2/files` | **403** Forbidden (nginx) | — |
+| `https://ngw.devices.sberbank.ru:9443/api/v2/files` | **400** Bad Request (SynGX) | — |
+
+Выводы (live-формат решается API):
+
+- Files API доступен **только на `/v1/files`** (домен `api.giga.chat`). Путь `/v2/files` на том же домене отдаёт 403; legacy-домен `ngw.devices.sberbank.ru:9443/api/v2/files` — 400.
+- Загрузка: `POST /v1/files` с `multipart/form-data` (`file` + `purpose=general`) → возвращает JSON с `id` (UUID), `object: "file"`, `bytes`, `purpose`, `modalities`.
+- Использование в чате: `messages[].content` принимает `{ files: [{ id: "<file-id>" }] }` — модель получает содержимое файла.
+- V2 chat completion endpoint (`/v2/chat/completions`) **работает с file.id из `/v1/files`** — нет разрыва версий.
+- План §15 / translator.ts: legacy `uploadBase64File` целится в `GIGACHAT_FILES_URL = ngw.../api/v2/files` — нужно переключить на `https://api.giga.chat/v1/files`.
+- Форматы: PNG (1x1) прошёл; спека декларирует text/image/audio с лимитами (15 Мб image, 35 Мб audio, 40 Мб text).
+- `content.files` в request — это keyed-объект `{ id: string }`, соответствует спеке.
