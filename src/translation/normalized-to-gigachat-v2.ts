@@ -90,10 +90,17 @@ function toV2Message(m: NormalizedMessage, priorMessages: NormalizedMessage[]): 
         v2.content.push({ files: [{ id: part.id }] });
         break;
       case "image":
-        // V2 has no image content part in the spec. Direct image content is
-        // out of scope until PHASE 6 (file upload / inline_data mapping).
+        // V2 has no image content part in the spec; images travel as uploaded
+        // files (`content.files`). The V2 pipeline uploads base64 data URLs
+        // upstream (`uploadDataUrlsInRequest`); only HTTP(S) URLs (or parts
+        // whose upload failed and was NOT re-raised) can arrive here.
+        if (part.url.startsWith("data:")) {
+          throw new Error(
+            "image data URL reached the V2 mapper un-uploaded; upload step failed in the pipeline (see cause above)",
+          );
+        }
         throw new Error(
-          "image content part cannot map to V2 yet (PHASE 6: file upload / inline_data mapping)",
+          'HTTP(S) image URLs are not supported by GigaChat V2: convert to a base64 data URL or pre-upload via /v1/files and pass { type: "file", id }',
         );
       case "tool_result": {
         const linked = linkedNames[resultIndex];

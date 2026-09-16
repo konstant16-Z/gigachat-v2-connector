@@ -94,16 +94,15 @@ export async function uploadDataUrlsInRequest(
     const newContent: NormalizedContentPart[] = [];
     for (const part of msg.content) {
       if (part.type === "image" && part.url.startsWith("data:")) {
-        try {
-          const fileId = await uploadBase64DataUrl(part.url, token);
-          newContent.push({ type: "file", id: fileId, target: "image" });
-        } catch (err) {
-          // Controlled error: keep original image part but log failure
-          // The downstream mapper will throw a controlled error for image parts
-          // (PHASE 6 deferral), which is the documented behavior.
-          console.error(`[files] Failed to upload image: ${err instanceof Error ? err.message : String(err)}`);
-          newContent.push(part);
-        }
+        // No silent downgrade: if the upload fails, surface a controlled error
+        // with the underlying cause instead of forwarding an unmappable part.
+        const fileId = await uploadBase64DataUrl(part.url, token).catch(
+          (err: unknown) => {
+            const cause = err instanceof Error ? err.message : String(err);
+            throw new Error(`failed to upload image data URL to GigaChat files: ${cause}`);
+          },
+        );
+        newContent.push({ type: "file", id: fileId, target: "image" });
       } else {
         newContent.push(part);
       }

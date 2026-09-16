@@ -222,7 +222,7 @@ describe("normalized-to-gigachat-v2", () => {
     ).toThrow(/unknown builtin tool "web_search"/);
   });
 
-  test("throws a controlled error on image parts (deferred to PHASE 6)", () => {
+  test("throws a controlled error on HTTP(S) image URLs (V2 cannot ingest URLs)", () => {
     expect(() =>
       normalizedToGigaChatV2({
         model: "GigaChat-2-Max",
@@ -233,7 +233,21 @@ describe("normalized-to-gigachat-v2", () => {
           },
         ],
       }),
-    ).toThrow(/PHASE 6/);
+    ).toThrow(/HTTP\(S\) image URLs are not supported by GigaChat V2/);
+  });
+
+  test("throws a controlled error when a data-URL image reaches the mapper un-uploaded", () => {
+    expect(() =>
+      normalizedToGigaChatV2({
+        model: "GigaChat-2-Max",
+        messages: [
+          {
+            role: "user",
+            content: [{ type: "image", url: "data:image/png;base64,aGVsbG8=" }],
+          },
+        ],
+      }),
+    ).toThrow(/image data URL reached the V2 mapper un-uploaded/);
   });
 
   test("throws a controlled error when a tool result name cannot be resolved", () => {
