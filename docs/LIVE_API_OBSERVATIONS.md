@@ -267,3 +267,18 @@ Live-паттерн: `^[A-Za-z][A-Za-z0-9_.-]*$` (**допускает `-` и `.
 - **Серверный round-trip**: для builtin-tools модель выполняет вызов на сервере и возвращает результат обычным text-контентом (не `function_call`) — OpenCode round-trip не требуется, current text-mapping корректен.
 - **Forced-mode**: forced builtin → `tool_config.tool_name`, forced custom → `tool_config.function_name` (спека: tool_name для инструментов, function_name для функций).
 - Не зондировались `image_generate`/`model_3d_generate` (спека уже декларирует; генерация расходует квоту).
+
+## 12. OpenCode E2E smoke — live round-trip через плагин (2026-09-16, `scripts/smoke/run-smoke.sh`)
+
+Реальный `opencode run --standalone` (модель `gigachat/GigaChat-2-Max`, agent `build`) против live API через свежий `dist/index.js` (`v2:true`, `GIGACHAT_DEBUG=true`, scratch XDG-изоляция). Шесть композпозируемых сценариев (explain / fix / add-tests / run-and-fix / parallel tools / MCP fs). Outbound-маршрут доказывается вендорным capture-плагином (`SMOKE_DUMP_LOG`): все запросы уходят в `https://api.giga.chat/v2/chat/completions`.
+
+| Факт | Наблюдение | Статус |
+|---|---|---|
+| V2-хост при активном v2-режиме | V2-маппинг тела + немэпленный URL (`api.giga.chat` отсутствовал в `gigaHosts`) → 400 `invalid JSON syntax` на v1-эндпоинте; после фикса `targetV2UrlFor` (все giga-хосты → V2 URL) → 200 | баг, исправлено |
+| `function_result.result` | сырой текст (список файлов/содержимое) → 400 `invalid function result for function read json string <text>, error: JSON parse error at line 1 column 1`; `JSON.stringify(text)` → 200 | баг, исправлено |
+| роль `function` + массив `[{function_result}]` | многоходовый round-trip (tool_call → result → следующее сообщение модели) → 200/stop | подтверждено |
+| параллельные tool_calls | 3 независимых тула в одном шаге → 200, модель получает все результаты | подтверждено |
+| MCP-тулы | `server-filesystem` (server `fs`, 14 тулов) читает файл; результат уходит в следующую итерацию штатно | подтверждено |
+| стрим после тул-раунда | редкий апстрим-сталл ~2 мин на продолжении после tool-result (200, обрезанный ответ) — апстрим-лаг, плагин не причастен | флак, покрыт авто-ретраем сета |
+
+Итог: PHASE 10 §26 закрыт — 6/6 сценариев `exit=0`, все ассерты зелёные, маршрут `/v2/chat/completions` подтверждён в каждом прогоне.
