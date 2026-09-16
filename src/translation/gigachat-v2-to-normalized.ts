@@ -3,8 +3,9 @@
  *
  * Full-fidelity mapping: non-text content (files, tool results, logprobs,
  * inline_data) is preserved in `contentParts`/`metadata` instead of being
- * silently dropped (agents.md RULE 8/13). tool_execution items are surfaced as
- * tool results provisionally until PHASE 7 (builtin tools).
+ * silently dropped (agents.md RULE 8/13). `tool_execution` items are surfaced
+ * as tool results; builtin-tool calls arrive as plain text (live-verified:
+ * web_search/url_content_extraction execute server-side, no function_call).
  */
 
 import type {

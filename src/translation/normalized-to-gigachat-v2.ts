@@ -17,7 +17,7 @@ import type {
   NormalizedTool,
   ToolResultPart,
 } from "../core/types";
-import { toV2BuiltinTool } from "../gigachat/v2/tools/builtin";
+import { isKnownBuiltinTool, toV2BuiltinTool } from "../gigachat/v2/tools/builtin";
 import { toCustomFunction } from "../gigachat/v2/tools/function";
 import { type ToolResultRef, verifyToolLinkage } from "../gigachat/v2/tools/parallel";
 import type {
@@ -177,7 +177,12 @@ function toToolConfig(norm: NormalizedRequest): ToolConfig | undefined {
   const choice = norm.toolChoice;
   if (choice === "none") return { mode: "none" };
   if (choice !== null && typeof choice === "object") {
-    return { mode: "forced", function_name: choice.functionName };
+    const name = choice.functionName;
+    // Builtin tools are forced via `tool_name`; custom functions via
+    // `function_name` (spec: tool_config.tool_name / function_name).
+    return isKnownBuiltinTool(name)
+      ? { mode: "forced", tool_name: name }
+      : { mode: "forced", function_name: name };
   }
   // auto is the V2 default whenever tools are declared; make it explicit.
   if (choice === "auto" || (norm.tools?.length ?? 0) > 0) return { mode: "auto" };

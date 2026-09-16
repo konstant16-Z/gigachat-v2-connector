@@ -38,9 +38,11 @@ export interface CustomFunction {
   return_parameters?: Record<string, unknown>;
 }
 
-/** One of the possible tool declaration entries (spec oneOf). */
+/** One of the possible tool declaration entries (spec oneOf + live-verified builtins). */
 export type V2Tool =
   | { functions: { specifications: CustomFunction[] } }
+  | { web_search: Record<string, never> }
+  | { url_content_extraction: Record<string, never> }
   | { image_generate: Record<string, never> }
   | { model_3d_generate: Record<string, never> };
 

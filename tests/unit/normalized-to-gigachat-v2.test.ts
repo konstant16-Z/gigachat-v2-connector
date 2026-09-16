@@ -77,6 +77,15 @@ describe("normalized-to-gigachat-v2", () => {
     expect(JSON.stringify(v2)).not.toContain("reasoning");
   });
 
+  test("forced tool_choice on a known builtin maps to tool_name (not function_name)", () => {
+    const v2 = normalizedToGigaChatV2({
+      model: "GigaChat-2-Max",
+      messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      toolChoice: { functionName: "web_search" },
+    });
+    expect(v2.tool_config).toEqual({ mode: "forced", tool_name: "web_search" });
+  });
+
   test('text response_format maps to {type:"text"}', () => {
     const v2 = normalizedToGigaChatV2({
       model: "GigaChat-2-Max",
@@ -213,13 +222,20 @@ describe("normalized-to-gigachat-v2", () => {
     });
     expect(v2.tools).toEqual([{ image_generate: {} }]);
 
+    const v2web = normalizedToGigaChatV2({
+      model: "GigaChat-2-Max",
+      messages: [],
+      tools: [{ name: "b", builtin: "web_search" }],
+    });
+    expect(v2web.tools).toEqual([{ web_search: {} }]);
+
     expect(() =>
       normalizedToGigaChatV2({
         model: "GigaChat-2-Max",
         messages: [],
-        tools: [{ name: "b", builtin: "web_search" }],
+        tools: [{ name: "b", builtin: "code_interpreter" }],
       }),
-    ).toThrow(/unknown builtin tool "web_search"/);
+    ).toThrow(/unknown builtin tool "code_interpreter"/);
   });
 
   test("throws a controlled error on HTTP(S) image URLs (V2 cannot ingest URLs)", () => {
