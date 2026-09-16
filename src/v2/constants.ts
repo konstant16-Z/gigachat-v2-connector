@@ -11,8 +11,8 @@ export const GIGACHAT_OAUTH_URL = "https://ngw.devices.sberbank.ru:9443/api/v2/o
 export const GIGACHAT_COMPLETIONS_URL = "https://gigachat.devices.sberbank.ru/api/v1/chat/completions";
 /** GigaChat V2 Chat Completions endpoint (V2 target, plan §22) */
 export const GIGACHAT_V2_COMPLETIONS_URL = "https://api.giga.chat/v2/chat/completions";
-/** GigaChat Files (attachments) endpoint */
-export const GIGACHAT_FILES_URL = "https://ngw.devices.sberbank.ru:9443/api/v2/files";
+/** GigaChat Files (attachments) endpoint — live-verified 2026-09-16: /v1/files works, /v2/files returns 403 */
+export const GIGACHAT_FILES_URL = "https://api.giga.chat/v1/files";
 
 /** OpenCode shared config directory */
 export const CONFIG_DIR = path.join(os.homedir(), ".config", "opencode");

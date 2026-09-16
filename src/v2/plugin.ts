@@ -202,7 +202,7 @@ export const plugin = {
           let gigaBody: unknown;
           let targetUrl: string;
           if (v2 && pipeline) {
-            gigaBody = pipeline.chatRequest(openAiBody, sessionKey(event));
+            gigaBody = await pipeline.chatRequest(openAiBody, sessionKey(event));
             targetUrl = targetV2UrlFor(requestUrl);
             log("Forwarding V2-mapped request to GigaChat V2 completions...");
           } else {

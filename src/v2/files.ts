@@ -1,0 +1,115 @@
+/**
+ * GigaChat Files API client (live-verified 2026-09-16).
+ *
+ * Uploads base64 data-URL images/files to `/v1/files` and returns the file ID
+ * for use in chat completions via `messages[].content.files`.
+ */
+import axios, { AxiosError } from "axios";
+import { GIGACHAT_FILES_URL } from "./constants.js";
+import { getHttpsAgent, shouldVerifySsl } from "./net.js";
+import { sanitizeError } from "./net.js";
+
+export interface UploadedFile {
+  id: string;
+  object: "file";
+  bytes: number;
+  created_at: number;
+  filename: string;
+  purpose: string;
+  access_policy: string;
+  modalities: string[];
+}
+
+/**
+ * Upload a base64 data-URL (e.g. `data:image/png;base64,....`) to GigaChat Files.
+ * Returns the file ID.
+ *
+ * Live-verified: POST https://api.giga.chat/v1/files with multipart/form-data
+ * (file + purpose=general) → 200 with { id, object, bytes, ... }.
+ */
+export async function uploadBase64DataUrl(
+  dataUrl: string,
+  token: string,
+): Promise<string> {
+  // Parse data URL: data:<mime>;base64,<data>
+  const matches = dataUrl.match(/^data:([A-Za-z0-9\-+./]+);base64,(.+)$/);
+  if (!matches || matches.length !== 3) {
+    throw new Error("Invalid base64 data URL format");
+  }
+  const mimeType = matches[1];
+  const dataString = matches[2];
+  if (!mimeType || !dataString) {
+    throw new Error("Invalid base64 data URL parts");
+  }
+
+  const buffer = Buffer.from(dataString, "base64");
+  let ext = "png";
+  if (mimeType.includes("jpeg")) ext = "jpg";
+  else if (mimeType.includes("webp")) ext = "webp";
+  else if (mimeType.includes("gif")) ext = "gif";
+  else if (mimeType.includes("pdf")) ext = "pdf";
+
+  const tempFileName = `upload_${Date.now()}.${ext}`;
+
+  // Use native FormData (available in Bun)
+  const form = new FormData();
+  const blob = new Blob([buffer], { type: mimeType });
+  form.append("file", blob, tempFileName);
+  form.append("purpose", "general");
+
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${token}`,
+    // FormData will set Content-Type with boundary
+  };
+
+  const httpsAgent = getHttpsAgent(shouldVerifySsl(), "");
+
+  try {
+    const response = await axios.post<UploadedFile>(GIGACHAT_FILES_URL, form, {
+      headers,
+      httpsAgent,
+      timeout: 30000,
+    });
+    return response.data.id;
+  } catch (err) {
+    throw sanitizeError(err);
+  }
+}
+
+/**
+ * Scan normalized messages for ImageParts with data URLs, upload them,
+ * and replace with FileParts. Returns a new NormalizedRequest with files uploaded.
+ *
+ * This is an async pre-processing step for the V2 pipeline.
+ */
+import type { NormalizedRequest, NormalizedMessage, NormalizedContentPart } from "../core/types";
+
+export async function uploadDataUrlsInRequest(
+  request: NormalizedRequest,
+  token: string,
+): Promise<NormalizedRequest> {
+  const messagesWithUploaded: NormalizedMessage[] = [];
+
+  for (const msg of request.messages) {
+    const newContent: NormalizedContentPart[] = [];
+    for (const part of msg.content) {
+      if (part.type === "image" && part.url.startsWith("data:")) {
+        try {
+          const fileId = await uploadBase64DataUrl(part.url, token);
+          newContent.push({ type: "file", id: fileId, target: "image" });
+        } catch (err) {
+          // Controlled error: keep original image part but log failure
+          // The downstream mapper will throw a controlled error for image parts
+          // (PHASE 6 deferral), which is the documented behavior.
+          console.error(`[files] Failed to upload image: ${err instanceof Error ? err.message : String(err)}`);
+          newContent.push(part);
+        }
+      } else {
+        newContent.push(part);
+      }
+    }
+    messagesWithUploaded.push({ ...msg, content: newContent });
+  }
+
+  return { ...request, messages: messagesWithUploaded };
+}

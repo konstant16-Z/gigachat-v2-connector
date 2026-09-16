@@ -30,9 +30,9 @@ function v2ResponseWithState(stateId?: string): ChatCompletionV2Response {
 }
 
 describe("createV2Pipeline.chatRequest", () => {
-  test("OpenAI body maps to a V2 wire request", () => {
+  test("OpenAI body maps to a V2 wire request", async () => {
     const pipeline = createV2Pipeline();
-    const v2 = pipeline.chatRequest(basicChatRequest, "s-1");
+    const v2 = await pipeline.chatRequest(basicChatRequest, "s-1");
     expect(v2.model).toBe("GigaChat-2-Max");
     expect(v2.messages[0].role).toBe("system");
     expect(v2.messages[2].content).toContainEqual({
@@ -40,22 +40,22 @@ describe("createV2Pipeline.chatRequest", () => {
     });
   });
 
-  test("session functions_state_id is injected when the store has one", () => {
+  test("session functions_state_id is injected when the store has one", async () => {
     const pipeline = createV2Pipeline();
     pipeline.store.capture("s-1", "state-live");
-    const v2 = pipeline.chatRequest(basicChatRequest, "s-1");
+    const v2 = await pipeline.chatRequest(basicChatRequest, "s-1");
     const assistant = v2.messages.filter((m) => m.role === "assistant");
     expect(assistant.at(-1)?.functions_state_id).toBe("state-live");
   });
 
-  test("sessions never mix state", () => {
+  test("sessions never mix state", async () => {
     const pipeline = createV2Pipeline();
     pipeline.store.capture("A", "state-A");
-    expect(pipeline.chatRequest(basicChatRequest, "A").messages[2].functions_state_id).toBe(
+    expect((await pipeline.chatRequest(basicChatRequest, "A")).messages[2].functions_state_id).toBe(
       "state-A",
     );
     expect(
-      pipeline.chatRequest(basicChatRequest, "B").messages[2].functions_state_id,
+      (await pipeline.chatRequest(basicChatRequest, "B")).messages[2].functions_state_id,
     ).toBeUndefined();
   });
 });

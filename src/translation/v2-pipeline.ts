@@ -22,6 +22,8 @@ import { internalToOpenAiChunks } from "../streaming/opencode";
 import { SseParser } from "../streaming/parser";
 import { StreamStateMachine } from "../streaming/state";
 import type { OpenAiChatBody, OpenAiChatCompletion } from "../types/gigachat";
+import { authManager } from "../v2/auth";
+import { uploadDataUrlsInRequest } from "../v2/files";
 import { gigachatV2ToNormalized } from "./gigachat-v2-to-normalized";
 import { normalizedToGigaChatV2 } from "./normalized-to-gigachat-v2";
 import { normalizedToOpenCode } from "./normalized-to-opencode";
@@ -41,8 +43,8 @@ export interface V2PipelineOptions {
 
 export interface V2Pipeline {
   store: SessionToolStateStore;
-  /** OpenAI chat body → GigaChat V2 wire body (session state injected). */
-  chatRequest(openAiBody: OpenAiChatBody, sessionId: string): ChatCompletionV2Request;
+  /** OpenAI chat body → GigaChat V2 wire body (session state injected; async for file uploads). */
+  chatRequest(openAiBody: OpenAiChatBody, sessionId: string): Promise<ChatCompletionV2Request>;
   /** V2 JSON response body → OpenAI chat completion (session state captured). */
   jsonResponse(v2Body: ChatCompletionV2Response, sessionId: string): OpenAiChatCompletion;
   /**
@@ -66,10 +68,18 @@ export function createV2Pipeline(options: V2PipelineOptions = {}): V2Pipeline {
 
   return {
     store,
-    chatRequest(openAiBody, sessionId) {
+    async chatRequest(openAiBody, sessionId) {
       const normalized = openCodeToNormalized(openAiBody);
       const withState = store.applyToRequest(sessionId, normalized);
-      return normalizedToGigaChatV2(withState);
+      // Upload any base64 data-URL images to Files API before mapping to V2 wire format.
+      // Only fetch token if there are data URLs to upload.
+      const hasDataUrls = withState.messages.some((m) =>
+        m.content.some((p) => p.type === "image" && p.url.startsWith("data:")),
+      );
+      const withFiles = hasDataUrls
+        ? await authManager.getAccessToken().then(({ token }) => uploadDataUrlsInRequest(withState, token))
+        : withState;
+      return normalizedToGigaChatV2(withFiles);
     },
     jsonResponse(v2Body, sessionId) {
       const normalized = gigachatV2ToNormalized(v2Body);
