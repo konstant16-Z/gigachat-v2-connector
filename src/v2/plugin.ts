@@ -16,6 +16,8 @@ import { translateOpenAiToGigaChat } from "./translator.js";
 import { translateJsonResponse, translateStreamingResponse } from "./response.js";
 import { createV2Pipeline } from "../translation/v2-pipeline.js";
 import type { V2Pipeline } from "../translation/v2-pipeline.js";
+import { backoffDelayMs, loadRetryConfig, sleep } from "./retry.js";
+import { isRetryableStatus } from "../gigachat/v2/errors.js";
 import {
   gigaHosts,
   registerGigaEndpoint,
@@ -26,6 +28,17 @@ import {
 } from "./hosts.js";
 
 const PLUGIN_ID = "gigacode";
+
+/** Final outbound request snapshot kept for retry (plan §19); chat only. */
+interface PendingRequest {
+  url: string;
+  method: string;
+  headers: Headers;
+  body: string | Uint8Array;
+}
+
+/** Pending requests keyed by RqUID, consumed by the response hook. */
+const pendingRequests = new Map<string, PendingRequest>();
 
 type Options = {
   baseURL?: string;
@@ -216,10 +229,19 @@ export const plugin = {
             "Content-Type": "application/json",
             RqUID: v4()
           });
+          const body = JSON.stringify(gigaBody);
           event.request = new Request(targetUrl, {
             method: "POST",
             headers,
-            body: JSON.stringify(gigaBody)
+            body
+          });
+          // Snapshot for retry (plan §19): chat completions are safe to retry
+          // on transient errors; files/direct are not (non-idempotent).
+          pendingRequests.set(headers.get("RqUID") ?? "", {
+            url: targetUrl,
+            method: "POST",
+            headers,
+            body
           });
         } else {
           log("Direct proxying GigaChat API call...");
@@ -254,6 +276,49 @@ export const plugin = {
         const modelProvider = event?.model?.providerID;
         const isGiga = (host && gigaHosts.has(host)) || isGigaProvider(modelProvider);
         if (!isGiga || !event.response) return;
+
+        // Retry/backoff (plan §19): 429/5xx → exponential backoff; 401 → token
+        // refresh + one retry. Only for chat completions (idempotent); files/
+        // direct calls pass through. Uses the snapshot registered in the
+        // request hook, keyed by RqUID.
+        const rquid = event?.request?.headers?.get?.("RqUID") ?? "";
+        const stored = pendingRequests.get(rquid);
+        if (stored && (isRetryableStatus(event.response.status) || event.response.status === 401)) {
+          const retryConfig = loadRetryConfig();
+          let current: Response = event.response;
+          let refreshed = false;
+          for (let attempt = 0; attempt < retryConfig.maxAttempts; attempt++) {
+            const status = current.status;
+            if (status === 401) {
+              if (refreshed) break; // refresh exactly once; surface a second 401
+              refreshed = true;
+              authManager.clearTokenCache();
+              const { token } = await authManager.getAccessToken();
+              stored.headers.set("Authorization", `Bearer ${token}`);
+              warn("Retrying request after token refresh (401).");
+            } else if (!isRetryableStatus(status)) {
+              break;
+            } else {
+              await sleep(backoffDelayMs(attempt, retryConfig));
+            }
+            try {
+              const fetchOpts: RequestInit = {
+                method: stored.method,
+                headers: new Headers(stored.headers),
+                body: stored.body
+              };
+              if (retryConfig.timeoutMs > 0) fetchOpts.signal = AbortSignal.timeout(retryConfig.timeoutMs);
+              current = await fetch(new Request(stored.url, fetchOpts));
+            } catch (fetchErr) {
+              warn("Retry fetch failed:", fetchErr instanceof Error ? fetchErr.message : String(fetchErr));
+              // Transient network failure counts against the retry budget too.
+            }
+            log(`Upstream ${String(current.status)} after attempt ${attempt + 1}/${retryConfig.maxAttempts}`);
+          }
+          event.response = current;
+          pendingRequests.delete(rquid);
+        }
+
         const contentType = event.response.headers.get("content-type") || "";
         if (v2 && pipeline) {
           const isChat = typeof requestUrl === "string" && requestUrl.includes("/chat/completions");

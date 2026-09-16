@@ -77,6 +77,16 @@ export class GigaCodeAuthManager {
     return !!this.credentialsValue || !!process.env.GIGACHAT_CREDENTIALS;
   }
 
+  /**
+   * Drop the cached access token so the next getAccessToken() performs a fresh
+   * OAuth token exchange (plan §20: on a 401, invalidate and retry once).
+   */
+  clearTokenCache(): void {
+    this.tokenCache = null;
+    this.refreshPromise = null;
+    log("Token cache cleared (401 detected).");
+  }
+
   getActiveAccount(): GigaChatAccount | null {
     if (!this.credentialsValue) {
       if (process.env.GIGACHAT_CREDENTIALS) {

@@ -1,23 +1,60 @@
 /**
- * GigaChat V2 error contract (plan §6 "errors").
+ * Unified error types for GigaChat V2 API (plan §18).
  *
- * Kept at the provider boundary: transport/http errors and their status bodies
- * are normalized here before they reach the adapter. No `any`.
+ * Preserves: HTTP status, provider error message, request/correlation ID,
+ * retryability classification. Never leaks credentials or secret headers.
  */
 
-/** Status error bodies described in the OpenAPI spec (400/401/404/406/429/500). */
-export interface V2ErrorBody {
-  status?: number;
-  code?: number;
-  message?: string;
+export interface GigaChatError extends Error {
+  /** HTTP status code from the upstream response. */
+  status: number;
+  /** Provider-specific error code string (if present in the response). */
+  providerCode?: string;
+  /** Request correlation ID (RqUID) for tracing. */
+  requestId?: string;
+  /** Whether the request is safe to retry on this error. */
+  retryable: boolean;
 }
 
-/** Uniform representation of a failed V2 call produced by the boundary. */
-export interface V2ApiError {
-  kind: "http" | "network" | "timeout" | "parse";
-  httpStatus?: number;
-  code?: number;
-  message: string;
-  /** Raw provider status body when available. */
-  raw?: V2ErrorBody;
+/**
+ * Classify an HTTP status code into retryability.
+ *
+ * 429 and 5xx are retryable; 401 is retryable exactly once (token refresh);
+ * everything else is not.
+ */
+export function isRetryableStatus(status: number): boolean {
+  return status === 429 || (status >= 500 && status <= 599);
+}
+
+/**
+ * Create a structured GigaChatError from an HTTP response status + body.
+ */
+export function classifyUpstreamError(
+  status: number,
+  body: unknown,
+  requestId?: string,
+): GigaChatError {
+  const message =
+    body && typeof body === "object"
+      ? String(
+          (body as { message?: unknown }).message ??
+            (body as { error?: { message?: unknown } }).error?.message ??
+            "unknown error",
+        )
+      : "unknown error";
+  const providerCode =
+    body && typeof body === "object"
+      ? String(
+          (body as { status?: unknown }).status ??
+            (body as { error?: { code?: unknown } }).error?.code ??
+            "",
+        )
+      : undefined;
+  const err = new Error(message) as GigaChatError;
+  err.name = "GigaChatError";
+  err.status = status;
+  err.providerCode = providerCode || undefined;
+  err.requestId = requestId;
+  err.retryable = isRetryableStatus(status) || status === 401;
+  return err;
 }
