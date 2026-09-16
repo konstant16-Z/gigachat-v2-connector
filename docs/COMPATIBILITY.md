@@ -24,9 +24,9 @@ Statuses follow the definitions from the plan:
 | Structured output | `response_format: {type:"json"|"json_schema"}` (only if no tools) | `model_options.response_format` with `type: "text" | "json_schema"` | `SUPPORTED` | Live-verified 2026-09-16 (`scripts/probe-response-format.ts`, `34911ba`): `text` and `json_schema` (with `schema`) return 200 / valid JSON; `strict: true` enforced; `json`/`json_object` and empty `schema` raise controlled errors per live rejection. |
 | Vision (images) | base64 → upload to `/api/v2/files` → `attachments: [file_id]` | base64 data URL → upload to `/v1/files` (live) → `content.files` with `id`; HTTP(S) URLs not ingestible | `PARTIAL` | Live-verified 2026-09-16 (`scripts/probe-files-api.ts`): data-URL images auto-uploaded in the V2 pipeline (`uploadDataUrlsInRequest`) → `content.files` (`ddeed4e`); pre-uploaded `file.id` passes through; HTTP(S) URL images → controlled error (no silent URL-as-text downgrade). |
 | Files (general) | `purpose: "general"` → `attachments: [file_id]` | `content.files` with `id` | `SUPPORTED` | Request-side placement implemented: `FilePart` → `content.files:[{id}]`; uploads use `/v1/files` with `purpose=general` (live-verified). |
-| Web search (builtin) | – | V2 builtin (P1) – not present in current connector | `UNSUPPORTED` | Requires implementation of built‑in tool `web_search` (if exposed via GigaChat). |
-| URL extraction (builtin) | – | V2 builtin (P1) | `UNSUPPORTED` | Same as above. |
-| Code interpreter / image / 3D | – | P2/P3 (e.g. `model_3d_generate` is already a built‑in tool) | `UNSUPPORTED` / `PARTIAL` | `model_3d_generate` wire entry implemented (`tools/builtin.ts`); end-to-end tool execution not yet implemented. |
+| Web search (builtin) | – | `web_search` | `SUPPORTED` | Live-verified 2026-09-16 (`scripts/probe-builtin-tools.ts`): `tools:[{web_search:{}}]` + auto → server-side live search, result returned as plain text (no `function_call` round-trip). Registered in `tools/builtin.ts`. |
+| URL extraction (builtin) | – | `url_content_extraction` | `SUPPORTED` | Live-verified: wire id is `url_content_extraction` (NOT `url_extraction` → live 404). Accepted by API; server-side fetch, result returned inline. Registered in `tools/builtin.ts`. |
+| Code interpreter / image / 3D | – | P2 `code_interpreter`; P3 `image_generate`, `model_3d_generate` | `UNSUPPORTED` / `PARTIAL` | Live: `code_interpreter` → 422 «Tool code_interpreter is unavailable» (known but unavailable — deliberately NOT registered, sending guarantees 422). `image_generate`/`model_3d_generate` wire entries registered per spec; end-to-end tool execution not yet implemented. |
 | MCP | not altered by plugin (passes through as `tool_calls`) | preserved | `PARTIAL` | No plugin changes needed; ensure tool names are not mangled incorrectly. |
 | Auth OAuth2 | `POST /api/v2/oauth` (Basic, RqUID) | unchanged | `SUPPORTED` | Already V2; live OAuth round-trip verified 2026-09-15. |
 | TLS | Built‑in Russian Trusted Root CA + external file | unchanged | `SUPPORTED` | No change needed; live TLS verified with the CA bundle. |
@@ -93,7 +93,7 @@ Verified against `https://api.giga.chat/v2/chat/completions` (OAuth scope `GIGAC
 
 ## Next Steps
 1. ✅ Live verification of the wired V2 path completed 2026-09-15/16 (chat, streaming, tools, state, tool ids, errors) — statuses above reflect it; probes preserved under `scripts/`.
-2. Remaining `UNSUPPORTED`/`MIGRATE`/`PARTIAL` rows need implementation (retry/backoff, observability, builtin web_search/url_extraction, 3D; vision HTTP-URL images; MCP). Implement alongside fixtures in `tests/gigachat-v2/` showing:
+2. Remaining `UNSUPPORTED`/`MIGRATE`/`PARTIAL` rows need implementation (retry/backoff, observability, 3D; vision HTTP-URL images; MCP; code_interpreter unavailable per live 422). Implement alongside fixtures in `tests/gigachat-v2/` showing:
    - Input (OpenAI request)
    - Expected V2 request (after mapping)
    - Fake V2 response

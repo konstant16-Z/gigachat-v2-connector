@@ -243,3 +243,27 @@ Live-паттерн: `^[A-Za-z][A-Za-z0-9_.-]*$` (**допускает `-` и `.
 - План §15 / translator.ts: legacy `uploadBase64File` целится в `GIGACHAT_FILES_URL = ngw.../api/v2/files` — нужно переключить на `https://api.giga.chat/v1/files`.
 - Форматы: PNG (1x1) прошёл; спека декларирует text/image/audio с лимитами (15 Мб image, 35 Мб audio, 40 Мб text).
 - `content.files` в request — это keyed-объект `{ id: string }`, соответствует спеке.
+
+---
+
+## 11. Builtin tools — live-проверка доступности (2026-09-16, `scripts/probe-builtin-tools.ts`)
+
+Зонд: по одному запросу (`GigaChat-2-Max`) на вариант; `tools: [{ "<id>": {} }]` + `tool_config.mode`.
+
+| Tool id | Статус | Комментарий |
+|---|---|---|
+| `web_search` | **200** ✅ | Модель выполнила серверный поиск и вернула актуальный ответ (погода в Москве: «облачно, +17…+19»). Streaming: только text-дельты, **без `function_call`** — серверный round-trip. |
+| `url_content_extraction` | **200** ✅ | Принят API; модель попыталась извлечь содержимое `https://example.com` (сайт отдал ошибку — «Не удалось получить содержимое страницы», но статус 200). |
+| `url_extraction` | **404** | `{"status":404,"message":"Unknown tool url_extraction"}` — **такого имени нет**; правильное имя `url_content_extraction`. |
+| `code_interpreter` | **422** | `{"status":422,"message":"Tool code_interpreter is unavailable"}` — известен, но недоступен (не регистрировать как known). |
+| `zzz_not_a_real_tool` | **404** | `{"status":404,"message":"Unknown tool zzz_not_a_real_tool"}` — shape ошибки для неизвестных тулов. |
+| `web_search` forced (`mode:"forced"`, `tool_name`) | **200** | Принят; на приветствие модель ответила текстом (forced-вызов не принудил поиск на тривиальном промпте). |
+| без тулов (baseline) | 200 | контроль |
+
+Выводы (wire-формат решается live-API):
+
+- **P1 `web_search` и `url_content_extraction` доступны** — спека (§9) декларировала только `image_generate`/`model_3d_generate`, но live подтверждает оба P1. Зарегистрированы в `src/gigachat/v2/tools/builtin.ts` (PHASE 7 §16).
+- **Различение ошибок**: 404 `Unknown tool <id>` — id не существует; 422 `Tool <id> is unavailable` — существует, но недоступен (code_interpreter). `code_interpreter` **не регистрируется** — sending может гарантированно дать 422.
+- **Серверный round-trip**: для builtin-tools модель выполняет вызов на сервере и возвращает результат обычным text-контентом (не `function_call`) — OpenCode round-trip не требуется, current text-mapping корректен.
+- **Forced-mode**: forced builtin → `tool_config.tool_name`, forced custom → `tool_config.function_name` (спека: tool_name для инструментов, function_name для функций).
+- Не зондировались `image_generate`/`model_3d_generate` (спека уже декларирует; генерация расходует квоту).
