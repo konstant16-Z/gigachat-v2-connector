@@ -89,6 +89,21 @@ Harness теперь ретраит сценарии по отдельности
 поэтому такой прогон оценивается как PASS, а отказ коннектора (запрос не ушёл
 на V2-эндпоинт или ассерт не выполнился на всех попытках) — как FAILED.
 
+**Повторный прогон тем же harness'ом (2026-09-17, `SMOKE_ATTEMPTS=3`) —
+`SMOKE RESULT: PASS` с первой попытки по всем сценариям:**
+
+| Сценарий | attempt | V2-запросов за attempt |
+| --- | --- | --- |
+| 01-explain | 1 | 3 |
+| 02-fix-factorial | 1 | 5 |
+| 03-add-tests | 1 | 4 |
+| 04-run-and-fix | 1 | 15 |
+| 05-parallel-tools | 1 | 5 |
+| 06-mcp-fs | 1 | 3 |
+
+Цепочка 02→03→04 — `PASS(attempt=1)`; ассерты factorial/isEven и fixture
+`bun test` зелёные; все запросы ушли на `api.giga.chat/v2/chat/completions`.
+
 ## Security (§36)
 
 - `.gitignore`: `node_modules/`, `dist/`, `*.log`, `logs/` — генеративные
@@ -146,10 +161,15 @@ Harness теперь ретраит сценарии по отдельности
 ## Остаётся на стороне пользователя
 
 1. **Пуш**: `cd /mnt/c/OpnCod_Proj/gigachat-v2-connector && git push origin main`
-   (в среде агента нет GitHub-аутентификации).
-2. **Live-прогоны**: `run-smoke.sh`, `run-long-session.sh`,
-   `run-live-perf.sh` — вписать результаты в
-   [`LONG_SESSION.md`](LONG_SESSION.md) / [`PERFORMANCE.md`](PERFORMANCE.md).
+   (в среде агента нет GitHub-аутентификации). Коммиты `b47b59c` и ранее уже
+   запушены; впереди — harness-фикс и release-доки.
+2. **Live-прогоны**:
+   - OpenCode E2E (`run-smoke.sh`) — ✅ **PASS** (2026-09-17, attempt 1, все 6
+     сценариев; см. выше);
+   - `run-long-session.sh` — вписать результат в
+     [`LONG_SESSION.md`](LONG_SESSION.md);
+   - `run-live-perf.sh --mode v2 --mode v1 --mode gpt2giga` — вписать в
+     [`PERFORMANCE.md`](PERFORMANCE.md).
 3. **Ротация секретов** (closeout): перевыпустить base64-`credentials` и
    старый PAT; после ротации повторить live-смок.
 4. **Живая проверка rollback** (`v2:false`) и повторный E2E.
