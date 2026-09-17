@@ -57,6 +57,14 @@ export function tryHost(requestUrl?: string): string | undefined {
   }
 }
 
+/**
+ * Whether a host belongs to the known GigaChat endpoint allowlist.
+ * Credentials must only ever be attached to these hosts (plan §31).
+ */
+export function isKnownGigaHost(host?: string): boolean {
+  return !!host && gigaHosts.has(host);
+}
+
 /** Rewrite the local dev endpoint to the real GigaChat API. */
 export function targetUrlFor(requestUrl: string, isChat: boolean, isFiles: boolean): string {
   const host = tryHost(requestUrl);

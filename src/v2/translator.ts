@@ -19,6 +19,7 @@
 import axios from "axios";
 import FormData from "form-data";
 import { v4 } from "uuid";
+import { assertUploadSize, base64DecodedBytes } from "../core/attachments.js";
 import { GIGACHAT_FILES_URL, log, error } from "./constants.js";
 import { getHttpsAgent, sanitizeError } from "./net.js";
 import { getToolAlias } from "./toolRegistry.js";
@@ -53,6 +54,8 @@ async function uploadBase64File(
   if (!mimeType || !dataString) {
     throw new Error("Invalid base64 data URL parts");
   }
+  // Enforce the documented per-attachment limit before decoding (plan §31).
+  assertUploadSize(mimeType, base64DecodedBytes(dataString));
   const buffer = Buffer.from(dataString, "base64");
   let ext = "png";
   if (mimeType.includes("jpeg")) ext = "jpg";

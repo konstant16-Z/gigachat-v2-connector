@@ -5,6 +5,7 @@ import * as https from "node:https";
 import * as tls from "node:tls";
 import * as fs from "node:fs";
 import axios from "axios";
+import { redactSecrets } from "../core/redact.js";
 import { warn } from "./constants.js";
 
 /**
@@ -154,13 +155,16 @@ export type CleanError = Error & { status?: number };
 export function sanitizeError(err: unknown): CleanError {
   if (!err) return new Error("Unknown error");
   if (err instanceof Error) {
-    const cleanError = new Error(err.message) as CleanError;
+    // Redact credentials/tokens/inline files that a transport error message or
+    // stack might carry before the error is logged or surfaced to the client
+    // (plan §31: never leak Authorization/access_token/client_secret).
+    const cleanError = new Error(redactSecrets(err.message)) as CleanError;
     cleanError.name = err.name;
-    if (err.stack) cleanError.stack = err.stack;
+    if (err.stack) cleanError.stack = redactSecrets(err.stack);
     if (axios.isAxiosError(err) && err.response?.status) {
       cleanError.status = err.response.status;
     }
     return cleanError;
   }
-  return new Error(String(err));
+  return new Error(redactSecrets(String(err)));
 }

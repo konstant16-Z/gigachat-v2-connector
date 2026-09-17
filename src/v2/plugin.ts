@@ -19,9 +19,9 @@ import type { V2Pipeline } from "../translation/v2-pipeline.js";
 import { backoffDelayMs, loadRetryConfig, sleep } from "./retry.js";
 import { isRetryableStatus } from "../gigachat/v2/errors.js";
 import {
-  gigaHosts,
   registerGigaEndpoint,
   isGigaProvider,
+  isKnownGigaHost,
   tryHost,
   targetUrlFor,
   targetV2UrlFor
@@ -190,17 +190,45 @@ export const plugin = {
         const requestUrl: string = event?.request?.url;
         const host = tryHost(requestUrl);
         const modelProvider = event?.model?.providerID;
-        const isGiga = (host && gigaHosts.has(host)) || isGigaProvider(modelProvider);
+        const isGiga = isKnownGigaHost(host) || isGigaProvider(modelProvider);
         if (!isGiga) return;
 
-        log(`Intercepting ${event.request.method} request to: ${requestUrl}`);
+        // Path classification without throwing on malformed URLs (plan §31:
+        // a malformed URL must degrade to "skip", never to a crash or a
+        // credential leak).
+        let pathname = "";
+        try {
+          pathname = new URL(requestUrl).pathname;
+        } catch {
+          pathname = "";
+        }
+        const isChat = pathname.includes("/chat/completions");
+        const isFiles = pathname.includes("/files");
+
+        // Resolve the effective target before fetching a token, then refuse to
+        // send the GigaChat token anywhere that is not a known GigaChat host
+        // (plan §31: SSRF / credential-exfiltration guard). `isGigaProvider`
+        // deliberately matches broad substrings, so a provider id alone must
+        // never be enough to attach `Authorization`.
+        const resolvedTarget =
+          isChat && v2 && pipeline
+            ? targetV2UrlFor(requestUrl)
+            : targetUrlFor(requestUrl, isChat, isFiles);
+        const targetHost = tryHost(resolvedTarget);
+        if (!isKnownGigaHost(targetHost)) {
+          warn(
+            `Refusing to intercept a request to unrecognised host "${
+              targetHost ?? requestUrl
+            }": GigaChat credentials are only sent to known GigaChat hosts ` +
+              "(register a custom endpoint via the plugin `baseURL` option).",
+          );
+          return;
+        }
+
+        log(`Intercepting ${event.request.method} request to: ${resolvedTarget}`);
         const { token } = await authManager.getAccessToken();
         const verifySsl = authManager.getVerifySsl();
         const caBundle = authManager.getCaBundle();
-        const url = new URL(requestUrl);
-        const isChat = url.pathname.includes("/chat/completions");
-        const isFiles = url.pathname.includes("/files");
-        const targetUrl = targetUrlFor(requestUrl, isChat, isFiles);
         const rawBody = await event.request.arrayBuffer();
 
         if (isChat) {
@@ -213,14 +241,12 @@ export const plugin = {
             }
           }
           let gigaBody: unknown;
-          let targetUrl: string;
+          const targetUrl = resolvedTarget;
           if (v2 && pipeline) {
             gigaBody = await pipeline.chatRequest(openAiBody, sessionKey(event));
-            targetUrl = targetV2UrlFor(requestUrl);
             log("Forwarding V2-mapped request to GigaChat V2 completions...");
           } else {
             gigaBody = await translateOpenAiToGigaChat(openAiBody, token, verifySsl, caBundle);
-            targetUrl = targetUrlFor(requestUrl, isChat, isFiles);
             log("Forwarding translated request to GigaChat API completions...");
           }
           const headers = new Headers({
@@ -251,7 +277,7 @@ export const plugin = {
           headers.set("Accept", "application/json");
           headers.set("Authorization", `Bearer ${token}`);
           headers.set("RqUID", v4());
-          event.request = new Request(targetUrl, {
+          event.request = new Request(resolvedTarget, {
             method: event.request.method,
             headers,
             body: new Uint8Array(rawBody)
@@ -273,9 +299,10 @@ export const plugin = {
       try {
         const requestUrl: string = event?.request?.url;
         const host = tryHost(requestUrl);
-        const modelProvider = event?.model?.providerID;
-        const isGiga = (host && gigaHosts.has(host)) || isGigaProvider(modelProvider);
-        if (!isGiga || !event.response) return;
+        // Only translate responses for known GigaChat hosts (plan §31). The
+        // request hook never rewrites or stores anything for an unknown host,
+        // so a provider-id-only match must not be treated as GigaChat wire.
+        if (!isKnownGigaHost(host) || !event.response) return;
 
         // Retry/backoff (plan §19): 429/5xx → exponential backoff; 401 → token
         // refresh + one retry. Only for chat completions (idempotent); files/

@@ -5,6 +5,7 @@
  * for use in chat completions via `messages[].content.files`.
  */
 import axios, { AxiosError } from "axios";
+import { assertUploadSize, base64DecodedBytes } from "../core/attachments.js";
 import { GIGACHAT_FILES_URL } from "./constants.js";
 import { getHttpsAgent, shouldVerifySsl } from "./net.js";
 import { sanitizeError } from "./net.js";
@@ -47,6 +48,9 @@ export async function uploadBase64DataUrl(
   if (!/^[A-Za-z0-9+/]*={0,2}$/.test(dataString) || dataString.length % 4 === 1) {
     throw new Error("Invalid base64 data URL payload");
   }
+  // Enforce the documented per-attachment limit before decoding (plan §31:
+  // oversized uploads must fail locally, not allocate or hit the network).
+  assertUploadSize(mimeType, base64DecodedBytes(dataString));
 
   const buffer = Buffer.from(dataString, "base64");
   let ext = "png";

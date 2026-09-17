@@ -4,6 +4,7 @@
  */
 import * as os from "node:os";
 import * as path from "node:path";
+import { redactSecrets } from "../core/redact.js";
 
 /** GigaChat OAuth2 token endpoint */
 export const GIGACHAT_OAUTH_URL = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth";
@@ -28,16 +29,16 @@ export function debugEnabled(): boolean {
 
 export function log(message: string, metadata?: unknown): void {
   if (!debugEnabled()) return;
-  const meta = metadata !== undefined ? ` ${JSON.stringify(metadata)}` : "";
-  console.log(`[GigaCode] [INFO] ${message}${meta}`);
+  const meta = metadata !== undefined ? ` ${redactSecrets(JSON.stringify(metadata))}` : "";
+  console.log(`[GigaCode] [INFO] ${redactSecrets(message)}${meta}`);
 }
 
 export function warn(message: string, metadata?: unknown): void {
-  const meta = metadata !== undefined ? ` ${JSON.stringify(metadata)}` : "";
-  console.warn(`[GigaCode] [WARN] ${message}${meta}`);
+  const meta = metadata !== undefined ? ` ${redactSecrets(JSON.stringify(metadata))}` : "";
+  console.warn(`[GigaCode] [WARN] ${redactSecrets(message)}${meta}`);
 }
 
 export function error(message: string, metadata?: unknown): void {
-  const meta = metadata !== undefined ? ` ${JSON.stringify(metadata)}` : "";
-  console.error(`[GigaCode] [ERROR] ${message}${meta}`);
+  const meta = metadata !== undefined ? ` ${redactSecrets(JSON.stringify(metadata))}` : "";
+  console.error(`[GigaCode] [ERROR] ${redactSecrets(message)}${meta}`);
 }
