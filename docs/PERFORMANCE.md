@@ -156,9 +156,9 @@ establish the peak memory of the separate proxy and all OpenCode processes.
 usage-only chunk (`choices: []`, the OpenAI `stream_options.include_usage`
 shape) when the upstream `response.message.done` carries `usage` — see
 `src/streaming/opencode.ts`. V1 streaming is unchanged and still omits it. The
-combined-run numbers below were captured **before** this change, so their v2
-`out tok`/`tok/s` are still `text.length/4` fallbacks; a re-run with the current
-connector is needed to make v2 usage-derived.
+result tables below come from runs **after** this change, so v2 `out tok`/`tok/s`
+are usage-derived (`usage_source="upstream"`); v1 stays on the harness estimate
+(or the optional `probe`).
 
 **Harness token accounting (2026-09-17).** The capture plugin now has two
 independent improvements (both benchmark-side; V1/connector behaviour is not
@@ -178,10 +178,13 @@ changed):
    `out tok` aggregates — their timing is a retry artifact and the connector
    never surfaced their tokens. They still count toward `n`/`errors`; the table
    also prints `ok` (non-error records).
+4. Each record carries `run_id` (`mode-scenario-repeat`); the harness collects
+   runs that hit `PERF_RUN_TIMEOUT` (`exit=124`) and passes them as
+   `PERF_EXCLUDE_RUNS`, so an agent/tool loop never enters the aggregates.
 
 Records carry `usage_source` (`upstream` | `probe` | `estimate`) and
-`estimate_tokens`; the analyzer prints the per-group source breakdown. The
-numbers below predate these changes.
+`estimate_tokens`; the analyzer prints the per-group source breakdown (see the
+result tables below).
 
 ### Usage-probe: exploratory live run — 2026-09-17
 
@@ -212,83 +215,107 @@ What it established:
   4–15), but v1's main `long` generation was not probed, so coverage is
   incomplete.
 
-This is why the probe now runs after the stream with a 429/5xx backoff. A clean
-usage-reference run (and a separate **no-probe** run for latency) is still
-pending; the numbers below are the older non-probe combined run.
+This is why the probe now runs after the stream with a 429/5xx backoff, and the
+harness tags each record with a `run_id` so runs cut off by `PERF_RUN_TIMEOUT`
+(`exit=124`) are dropped from the aggregates. The two follow-up runs below use
+both changes.
 
+### Result live-прогонов — 2026-09-17 (combined v1/v2/gpt2giga)
 
-### Result live-прогона — 2026-09-17 (combined v1/v2/gpt2giga)
+Два отдельных combined-прогона, по 5 сценариев × 3 повтора каждый; ни один
+запуск не упёрся в кап (`exit=124` нет):
+
+```bash
+# 1) latency run — без probe (канонические latency)
+scripts/bench/run-live-perf.sh --mode v1 --mode v2 --mode gpt2giga \
+  --gpt2giga-url http://127.0.0.1:8090/v2 --repeat 3
+# 2) usage-reference run — реальный upstream usage для v1
+scripts/bench/run-live-perf.sh --mode v1 --mode v2 --mode gpt2giga \
+  --gpt2giga-url http://127.0.0.1:8090/v2 --repeat 3 --usage-probe
+```
 
 Host: WSL2 (Linux 6.18.33.2-microsoft-standard-WSL2 x86_64) ·
 Bun 1.4.2 · Node v22.22.1 · OpenCode v2.0.5 · plugin 2.0.0 ·
-model `gigachat/GigaChat-2-Max` · 3 повтора на сценарий.
+model `gigachat/GigaChat-2-Max`.
 
-```bash
-# все три режима в одной сессии, 5 сценариев × 3 повтора (45 запусков)
-scripts/bench/run-live-perf.sh --mode v1 --mode v2 --mode gpt2giga \
-  --gpt2giga-url http://127.0.0.1:8090/v2 --repeat 3
-```
+`n` — число перехваченных chat-запросов (агент делает больше одного на прогон),
+не число повторов; `ok` — из них не ошибочные. См. ограничения выше: `exit=0`
+и `errors=0` не доказывают семантическую полноту каждого стрима.
 
-`n` в таблице — число перехваченных chat-запросов (агент может сделать больше
-одного на прогон), не число повторов. Все 45 запусков `exit=0`; все
-перехваченные ответы `status=200`. См. ограничения измерений выше — `exit=0` и
-`errors=0` не доказывают семантическую полноту каждого стрима.
+**Latency run (без probe).** Все ответы `status=200`. `usage src`: у v1 —
+`estimate` (V1 streaming не несёт `usage`, probe здесь выключен), у v2/gpt2giga —
+реальный upstream `usage`.
 
-| Mode | Scenario | n | sse | TTFT p50 ms | TTFT p95 ms | Total p50 ms | Total p95 ms | tok/s p50 | out tok p50 | errors |
-|------|----------|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| v1 | simple | 5 | 5 | 836.6 | 1447.5 | 838.2 | 1448.3 | 165.8 | 139 | 0 |
-| v1 | large | 8 | 8 | 1950.7 | 4081.9 | 1951.2 | 4082.3 | 96.7 | 164 | 0 |
-| v1 | tool | 8 | 8 | 1870.1 | 4494.1 | 1870.4 | 4513.5 | 336.8 | 185 | 0 |
-| v1 | parallel | 15 | 15 | 1384.2 | 2788.9 | 1384.7 | 2795.7 | 110.0 | 122 | 0 |
-| v1 | long | 6 | 6 | 1739.5 | 50721.0 | 1741.2 | 52875.4 | 259.2 | 185 | 0 |
-| v2 | simple | 6 | 6 | 345.0 | 1601.9 | 346.7 | 1603.5 | 84.7 | 116 | 0 |
-| v2 | large | 8 | 8 | 1865.7 | 2490.4 | 1867.0 | 2492.4 | 133.3 | 181 | 0 |
-| v2 | tool | 9 | 9 | 1893.3 | 6283.3 | 1897.1 | 6289.3 | 293.8 | 181 | 0 |
-| v2 | parallel | 9 | 9 | 1901.2 | 4106.2 | 1911.5 | 4107.6 | 391.9 | 259 | 0 |
-| v2 | long | 6 | 6 | 415.1 | 23000.0 | 417.4 | 29442.9 | 338.4 | 181 | 0 |
-| gpt2giga | simple | 9 | 9 | 405.7 | 1351.1 | 405.8 | 1356.2 | 17.8 | 9 | 0 |
-| gpt2giga | large | 11 | 11 | 1191.3 | 2345.3 | 1192.1 | 2346.3 | 27.3 | 30 | 0 |
-| gpt2giga | tool | 10 | 10 | 1426.3 | 2185.2 | 1432.6 | 2185.6 | 25.0 | 36 | 0 |
-| gpt2giga | parallel | 9 | 9 | 1733.3 | 3704.4 | 1740.8 | 3704.8 | 47.7 | 83 | 0 |
-| gpt2giga | long | 8 | 8 | 322.8 | 25808.3 | 322.8 | 29243.8 | 49.2 | 30 | 0 |
+| Mode | Scenario | n | ok | sse | TTFT p50 ms | TTFT p95 ms | Total p50 ms | Total p95 ms | tok/s p50 | out tok p50 | errors | usage src |
+|------|----------|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| v1 | simple | 6 | 6 | 6 | 585.7 | 1263.2 | 587.6 | 1269.1 | 0.8 | 1 | 0 | estimate:6 |
+| v1 | large | 9 | 9 | 9 | 1705.6 | 1895.7 | 1706.7 | 1896.1 | 12.4 | 8 | 0 | estimate:9 |
+| v1 | tool | 9 | 9 | 9 | 1848.7 | 3313.1 | 1849.1 | 3313.5 | 16.3 | 10 | 0 | estimate:9 |
+| v1 | parallel | 15 | 15 | 15 | 1094.7 | 2874.6 | 1095.0 | 2884.2 | 7.6 | 8 | 0 | estimate:15 |
+| v1 | long | 6 | 6 | 6 | 363.1 | 17342.9 | 364.8 | 18818.2 | 21.3 | 7 | 0 | estimate:6 |
+| v2 | simple | 6 | 6 | 6 | 436.6 | 1883.8 | 439.6 | 1885.2 | 7.6 | 4 | 0 | upstream:6 |
+| v2 | large | 9 | 9 | 9 | 1551.0 | 2945.0 | 1554.3 | 2949.0 | 18.7 | 27 | 0 | upstream:9 |
+| v2 | tool | 9 | 9 | 9 | 1615.1 | 2643.1 | 1617.2 | 2652.1 | 23.2 | 36 | 0 | upstream:9 |
+| v2 | parallel | 11 | 11 | 11 | 1590.3 | 3939.2 | 1596.8 | 3961.2 | 45.0 | 79 | 0 | upstream:11 |
+| v2 | long | 6 | 6 | 6 | 421.8 | 16402.5 | 434.4 | 19622.6 | 29.1 | 10 | 0 | upstream:6 |
+| gpt2giga | simple | 9 | 9 | 9 | 216.0 | 696.9 | 216.0 | 697.0 | 13.1 | 4 | 0 | estimate:3 upstream:6 |
+| gpt2giga | large | 12 | 12 | 12 | 1067.4 | 1532.5 | 1067.9 | 1536.4 | 31.1 | 33 | 0 | estimate:3 upstream:9 |
+| gpt2giga | tool | 11 | 11 | 11 | 1074.1 | 2526.5 | 1074.5 | 2536.5 | 31.4 | 36 | 0 | estimate:3 upstream:8 |
+| gpt2giga | parallel | 19 | 19 | 19 | 2540.5 | 5245.1 | 2541.1 | 5266.6 | 43.2 | 132 | 0 | estimate:3 upstream:16 |
+| gpt2giga | long | 9 | 9 | 9 | 294.3 | 14394.3 | 294.9 | 19859.3 | 32.0 | 10 | 0 | estimate:3 upstream:6 |
+
+**Usage-reference run (`--usage-probe`).** Здесь у v1 реальный upstream `usage`:
+28/28 перехваченных запросов `probe` (0 `estimate`). На `simple`/`tool`/`parallel`
+probe и контентная оценка согласуются (`out tok` 7–38 при `estimate` 7–8), а на
+`long` этот прогон случайно попал на короткие ответы модели (все три повтора
+~10 токенов, `out_bytes` ≈ 730), поэтому v1 `long` там нерепрезентативен —
+берите latency-run оценку. v2 — 38/38 `upstream`, gpt2giga — 37 `upstream` +
+15 `estimate`. См. вставку про probe выше: replay — это отдельная
+не-стриминговая генерация, а не точный пересчёт стрима.
 
 #### Чтение
 
-- **V2 в пределах апстрим-шума V1.** По TTFT p50 V2 ниже на `simple`
-  (345 vs 837) и `long` (415 vs 1740), сопоставим на `large` (1866 vs 1951),
-  `tool` (1893 vs 1870) и `parallel` (1901 vs 1384). Разброс апстрима на
+- **V2 в пределах апстрим-шума V1.** По TTFT p50 (latency run) V2 сопоставим на
+  `large` (1551 vs 1706), `tool` (1615 vs 1849) и `long` (422 vs 363), ниже на
+  `simple` (437 vs 586), выше на `parallel` (1590 vs 1095). Разброс апстрима на
   порядок больше µs-вклада маппинга (Part A), поэтому это не выделяет V2 как
   систематически «медленнее» или «быстрее».
-- **p95 ломают апстрим-столлы, не коннектор.** `long` p95: 50.7 s (v1),
-  23.0 s (v2), 25.8 s (gpt2giga); Total p95 до 52.9 s. Это зависания апстрима
+- **`tok/s` / `out tok` теперь usage-derived у v2/gpt2giga** (`upstream`), у v1 —
+  контентная оценка (V1 streaming не несёт `usage`; в usage-run v1 покрыт
+  `probe`). Но `out tok p50`/`tok/s p50` смешивают служебные и основные запросы
+  внутри сценария: на `long` p50 ≈ 10, тогда как max `out tok` — **1388** (v1,
+  estimate), **1177** (v2, upstream), **1282** (gpt2giga, upstream). Для основной
+  генерации смотрите max, а не p50.
+- **p95 ломают апстрим-столлы, не коннектор.** `long` p95: 17.3 s (v1),
+  16.4 s (v2), 14.4 s (gpt2giga); Total p95 до 19.9 s. Это зависания апстрима
   на отдельных повторах.
-- **`parallel` в этом прогоне сопоставим.** n=15/9/9 (в предыдущем отдельном
-  прогоне v2 уходил в петлю, n=142); все запросы вернулись `200`.
-- **`tok/s` и `out tok` между режимами не сравнимы в этом прогоне.** У v1/v2
-  `usage` не было ни в одной записи (0/42 и 0/38) → плагин считал
-  `round(text.length/4)` по всему SSE, включая протокол; у gpt2giga `usage` был
-  в 33/47 записей → реальные `completion_tokens`. Значения 139 vs 9 отражают
-  разные методы, а не разную длину ответов. Прогон снят **до** того, как V2
-  начал отдавать trailing usage-чанк (см. вставку выше), поэтому v2-числа здесь
-  ещё fallback; для usage-derived `tok/s` нужен повторный прогон. Harness с тех
-  пор считает fallback по сгенерированному тексту и умеет `--usage-probe`
-  (реальный `usage` для v1/v2) — см. «Harness token accounting» выше.
-- **Без run-level сбоев:** 45/45 `exit=0`, в отличие от предыдущей отдельной
-  сессии, где `v1/large #2` упал на OAuth `fetchToken` timeout.
+- **`parallel` — нестабильный для агента сценарий.** В части прогонов
+  2026-09-17 агент уходил на этом промпте в петлю — причём **и у v2, и у
+  gpt2giga**, а не только у V2 (до сотен одинаковых запросов); запуск резался
+  `PERF_RUN_TIMEOUT` (300 с, `exit=124`). Это поведение агента/модели, а не
+  коннектора (воспроизводится без V2), и такие запуски теперь автоматически
+  исключаются по `run_id`. В этой latency-таблице петли нет (v2 n=11,
+  gpt2giga n=19).
+- **Usage-reference run:** v1 28/28 `probe`, v2 38/38 `upstream`, gpt2giga
+  37 `upstream` + 15 `estimate`. Реальные `completion_tokens` подтверждают
+  порядок величин; см. оговорку про replay выше.
+- **Один `exit=1`:** `v1/large #3` (agent-level), при этом все перехваченные
+  запросы `status=200`; на latency-таблицу не влияет.
 - **Peak RSS не снимался** (см. ограничения выше); метод — `/usr/bin/time -v`
   либо сэмплирование `ps` с явным указанием процессов.
 
-**Вывод (plan §33):** в одном combined-прогоне медианы V2 и gpt2giga лежат в
+**Вывод (plan §33):** в combined-прогонах медианы V2 и gpt2giga лежат в
 диапазоне апстрим-шума V1; дополнительный state/mapping-слой V2 стоит единицы µs
-(Part A) и не требует искусственной оптимизации latency. Сравнение режимов
-индикативное: прогон последовательный, не interleaved, и ограничения выше
-применяются.
+(Part A) и не требует искусственной оптимизации latency. Токены у v2/gpt2giga
+теперь usage-derived, у v1 — реальные на `probe`-прогоне и оценка на
+latency-прогоне. Сравнение индикативное: прогоны последовательные, не
+interleaved, и ограничения выше применяются.
 
 ---
 
 ## C. gpt2giga comparison
 
-**Статус: измерено 2026-09-17 в том же combined-прогоне, что Part B**
+**Статус: измерено 2026-09-17 (latency run, тот же, что Part B)**
 (`--mode v1 --mode v2 --mode gpt2giga`). gpt2giga `0.3.0` — отдельный
 Python-прокси на `127.0.0.1:8090` с теми же GigaChat-кредами; форвардит на
 `https://api.giga.chat/v2/chat/completions`. Строки `gpt2giga` — в таблице
@@ -296,26 +323,26 @@ Part B; ниже сведены TTFT p50 по сценариям.
 
 | Scenario | v1 | v2 | gpt2giga |
 |---|---:|---:|---:|
-| simple | 836.6 | 345.0 | 405.7 |
-| large | 1950.7 | 1865.7 | 1191.3 |
-| tool | 1870.1 | 1893.3 | 1426.3 |
-| parallel | 1384.2 | 1901.2 | 1733.3 |
-| long | 1739.5 | 415.1 | 322.8 |
+| simple | 585.7 | 436.6 | 216.0 |
+| large | 1705.6 | 1551.0 | 1067.4 |
+| tool | 1848.7 | 1615.1 | 1074.1 |
+| parallel | 1094.7 | 1590.3 | 2540.5 |
+| long | 363.1 | 421.8 | 294.3 |
 
 ### Чтение
 
 - **Порядок величины один у всех трёх режимов.** Разница между режимами
   (десятки–сотни мс) меньше вклада апстрима и его столов; µs-уровень маппинга
-  (Part A) в этих числах не виден. gpt2giga ниже на `large`/`tool`/`long`, v2 —
-  на `simple`, но прогон последовательный (не interleaved), поэтому разницу
-  нельзя приписать исключительно прокси или коннектору.
-- **`tok/s` / `out tok` не сравнимы в этом прогоне:** у v1/v2 `usage`
-  отсутствовал (fallback по всему SSE), у gpt2giga `usage` был в большинстве
-  записей; прогон снят до правки V2 usage-чанка, см. ограничения в Part B.
-  Harness теперь умеет считать fallback по контенту и `--usage-probe` для
-  реального `usage` v1/v2 (см. «Harness token accounting»).
+  (Part A) в этих числах не виден. gpt2giga ниже почти везде (`simple`,
+  `large`, `tool`, `long`), но выше на `parallel`; прогон последовательный
+  (не interleaved), поэтому разницу нельзя приписать исключительно прокси или
+  коннектору.
+- **`tok/s` / `out tok` теперь usage-derived:** у gpt2giga и v2 — реальный
+  upstream `usage`, у v1 — контентная оценка (в usage-run — реальный `probe`).
+  Основную генерацию `long` (max `out tok`) сравнивать можно: 1177 (v2) против
+  1282 (gpt2giga) при оценке v1 1388.
 - **gpt2giga — валидная benchmark-цель.** Все перехваченные ответы `200`,
-  9–11 запросов на сценарий; код gpt2giga не копировался
+  9–19 запросов на сценарий; код gpt2giga не копировался
   (см. [`THIRD-PARTY-NOTICES.md`](../THIRD-PARTY-NOTICES.md)).
 
 ### Prerequisites / pitfalls (для повторного прогона)

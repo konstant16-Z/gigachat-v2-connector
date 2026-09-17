@@ -164,9 +164,9 @@ Harness теперь ретраит сценарии по отдельности
 ## Остаётся на стороне пользователя
 
 1. **Пуш**: `cd /mnt/c/OpnCod_Proj/gigachat-v2-connector && git push origin main`
-   (в среде агента нет GitHub-аутентификации). `origin/main` = `0ceaba4`;
-   локально впереди — release-доки (§26/§27/§33) и harness-фикс `f8656a0`
-   (capture gpt2giga).
+   (в среде агента нет GitHub-аутентификации). `origin/main` = `8f61d35`;
+   локально впереди — V2 trailing usage-чанк, harness-фиксы probe/timeout/run_id
+   и обновлённые release-доки (§26/§27/§33).
 2. **Live-прогоны**:
    - OpenCode E2E (`run-smoke.sh`) — ✅ **PASS** (2026-09-17, attempt 1, все 6
      сценариев; см. выше);
@@ -174,13 +174,14 @@ Harness теперь ретраит сценарии по отдельности
      22 tool interactions, hard FAIL 0, soft WARN 3; см.
      [`LONG_SESSION.md`](LONG_SESSION.md));
    - live perf (`run-live-perf.sh`) — ✅ **combined v1 + v2 + gpt2giga**
-     (2026-09-17, один прогон, 5 сценариев × 3 повтора, 45/45 `exit=0`;
-     медианы в пределах апстрим-шума, `tok/s` между режимами не сравнимы,
-     peak RSS не снимался; см. [`PERFORMANCE.md`](PERFORMANCE.md)).
-   - usage-probe (`--usage-probe`) — ✅ probe работает против живого
-     `api.giga.chat` (реальный `usage` для v1), но первый concurrent-вариант
-     ловил upstream 429 и искажал latency; probe переведён на
-     post-stream + backoff, чистый reference-прогон ещё не снят (см.
+     (2026-09-17, два прогона: latency без probe и usage-reference с
+     `--usage-probe`; по 5 сценариев × 3 повтора, без `exit=124`; медианы в
+     пределах апстрим-шума, `tok/s` у v2/gpt2giga usage-derived, у v1 —
+     реальный `probe`/контентная оценка, peak RSS не снимался; см.
+     [`PERFORMANCE.md`](PERFORMANCE.md)).
+   - usage-probe (`--usage-probe`) — ✅ post-stream + backoff: чистый
+     reference-прогон снят, v1 28/28 `probe` (реальный `usage`), 429 не
+     наблюдалось; latency берётся из отдельного no-probe прогона (см.
      [`PERFORMANCE.md`](PERFORMANCE.md)).
 3. **Ротация секретов** (closeout): перевыпустить base64-`credentials` и
    старый PAT; после ротации повторить live-смок.
