@@ -31,6 +31,9 @@
 #   PERF_CA_PEM         PEM bundle for OpenCode->GigaChat TLS
 #   PERF_MODEL          provider/model (default gigachat/GigaChat-2-Max)
 #   PERF_ROOT           scratch root (default /tmp/opencode/gigachat-perf)
+#   PERF_RUN_TIMEOUT    per-run wall-clock cap in seconds (default 300; 0 = no
+#                       cap). Guards against an agent/tool loop in one scenario
+#                       blocking the whole harness.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -45,6 +48,7 @@ REPEAT=3
 KEEP=0
 SCENARIO="all"
 USAGE_PROBE=0
+RUN_TIMEOUT="${PERF_RUN_TIMEOUT:-300}"
 declare -a MODES=()
 
 while [[ $# -gt 0 ]]; do
@@ -187,8 +191,14 @@ fi
 run_one() {
   local mode="$1" scenario="$2" repeat="$3"
   local prompt log probe_env=""
+  local -a timeout_cmd=()
   prompt="$(scenario_prompt "$scenario")"
   log="$PERF_ROOT/logs/${mode}-${scenario}-${repeat}.log"
+  # Cap each run so a stuck agent/tool loop in one scenario cannot pin the whole
+  # harness (observed: v2 `parallel` looping and issuing hundreds of requests).
+  if [[ "$RUN_TIMEOUT" != "0" ]] && command -v timeout >/dev/null 2>&1; then
+    timeout_cmd=(timeout --signal=TERM --kill-after=15 "$RUN_TIMEOUT")
+  fi
   # Option 1 (non-streaming usage probe) applies to the connector modes only;
   # gpt2giga already surfaces usage.
   if [[ "$USAGE_PROBE" == "1" && ( "$mode" == "v1" || "$mode" == "v2" ) ]]; then
@@ -211,6 +221,7 @@ run_one() {
       ${GPT2GIGA_API_KEY:+GPT2GIGA_API_KEY="$GPT2GIGA_API_KEY"} \
       ${PERF_MATCH:+PERF_MATCH="$PERF_MATCH"} \
       npm_config_cache="$PERF_ROOT/npm-cache" \
+      ${timeout_cmd[@]+"${timeout_cmd[@]}"} \
       opencode run --standalone --auto --print-logs --model "$MODEL" --agent build "$prompt" ) >"$log" 2>&1
   local rc=$?
   set -e
