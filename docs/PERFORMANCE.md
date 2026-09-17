@@ -12,7 +12,7 @@ Split, because the sandbox has no `api.giga.chat` access and no GitHub push:
 |------|-------|--------|
 | **A. Mapping overhead** (CPU/time of the translation layers, no network) | reproducible anywhere | measured (below) |
 | **B. Live latency / tokens·s⁻¹** (real GigaChat, OpenCode, memory/CPU) | terminal with GigaChat access | measured 2026-09-17 for v1 + v2 (below); peak RSS to fill |
-| **C. gpt2giga comparison** | terminal with the gpt2giga proxy | not run — needs a running proxy (`--gpt2giga-url`); procedure below |
+| **C. gpt2giga comparison** | terminal with the gpt2giga proxy | measured 2026-09-17 (below) |
 
 All four code gates stay green: `npx tsc --noEmit`, `bun test` (314 tests),
 `npx biome check .`, `bun run build`.
@@ -172,34 +172,83 @@ python3 scripts/bench/lib/analyze-perf.py \
 
 **Вывод (plan §33):** live-медианы V2 ≈ V1; дополнительный state/mapping-слой
 стоит единицы µs (Part A) и не требует искусственной оптимизации latency.
-gpt2giga-колонка не заполнена — см. Part C.
+gpt2giga измерен отдельной сессией — см. Part C.
 
 ---
 
 ## C. gpt2giga comparison
 
-**Статус: не выполнен (2026-09-17).** В окружении не было запущенного
-gpt2giga-прокси, а harness требует `--gpt2giga-url` (иначе
-`ERROR: --gpt2giga-url is required for mode gpt2giga`). Это ожидаемо: сравнение
-с gpt2giga — отдельная процедура на стороне пользователя.
-
-Prerequisites (user side): a running gpt2giga proxy with `api.giga.chat`
-credentials; the OpenAI-compatible endpoint exposed (typically `/v1`).
+**Статус: измерено 2026-09-17.** gpt2giga `0.3.0` запущен как отдельный
+Python-прокси на `127.0.0.1:8090` с теми же GigaChat-кредами; форвардит на
+`https://api.giga.chat/v2/chat/completions`. Harness — тот же, что в Part B,
+тот же capture-плагин и те же 5 сценариев:
 
 ```bash
-# 1. поднять gpt2giga (отдельный Python-прокси) с кредами GigaChat
-#    и дождаться его OpenAI-совместимого endpoint (обычно :8090/v1)
-
-# 2. тот же harness, тот же capture-плагин и те же 5 сценариев
-scripts/bench/run-live-perf.sh --mode gpt2giga --gpt2giga-url http://127.0.0.1:8090/v1 \
-  --repeat 3
-# 3. сравнить колонку с v1/v2 из Part B (те же Scenario/метрики)
+scripts/bench/run-live-perf.sh --mode gpt2giga \
+  --gpt2giga-url http://127.0.0.1:8090/v2 --repeat 3
 ```
 
-gpt2giga is a separate Python proxy, so its mapping cost and deployment
-footprint are not reproduced in Part A; the same five scenarios and the same
-capture plugin are used for an apples-to-apples wire-level comparison. Record
-its results next to the Part B table (same columns).
+`n` — перехваченные chat-запросы (агент делает больше одного на прогон), не
+число повторов. `out tok` — из `usage` (в этом прогоне апстрим usage слал:
+`usage` есть у 93 из 108 записей).
+
+| Mode | Scenario | n | sse | TTFT p50 ms | TTFT p95 ms | Total p50 ms | Total p95 ms | tok/s p50 | out tok p50 | errors |
+|------|----------|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| gpt2giga | simple   |  9 |  9 |   216.7 |   703.3 |   218.2 |   704.4 | 18.3 |   9 | 0 |
+| gpt2giga | large    | 12 | 12 |  1057.5 |  1728.5 |  1058.0 |  1730.1 | 29.3 |  33 | 0 |
+| gpt2giga | tool     | 11 | 11 |  1130.8 |  2656.1 |  1131.2 |  2664.6 | 44.1 |  36 | 0 |
+| gpt2giga | parallel | 68 | 68 |  2866.6 |  5171.5 |  2867.1 |  5172.1 | 54.1 | 153 | 0 |
+| gpt2giga | long     |  8 |  8 |   814.3 | 16370.0 |   814.3 | 23289.5 | 61.3 |  30 | 0 |
+
+Все 15 прогонов `exit=0`, все перехваченные ответы `status=200`; ошибок на
+стороне коннектора нет (в этом режиме коннектор не загружен — маппинг делает
+прокси).
+
+### TTFT p50: v1 / v2 / gpt2giga
+
+| Scenario | v1 | v2 | gpt2giga |
+|---|---:|---:|---:|
+| simple | 1201.1 | 443.3 | 216.7 |
+| large | 1627.5 | 1517.8 | 1057.5 |
+| tool | 1737.4 | 1608.6 | 1130.8 |
+| parallel | 1112.8 | 2752.9* | 2866.6* |
+| long | 608.8 | 420.1 | 814.3 |
+
+`*` — `parallel` несопоставим ни в одном из прогонов: модель уходила в петлю
+(n=142 у v2 и n=68 у gpt2giga против 15 у v1).
+
+### Чтение
+
+- **Порядок величины у всех трёх режимов один.** Разброс между режимами
+  (десятки–сотни мс) на порядок меньше вклада апстрима и его столов; µs-уровень
+  маппинга (Part A) в этих числах не виден.
+- **Кросс-сессионное сравнение — индикативное, не строгое.** Part B и Part C
+  сняты в разных сессиях при разной загрузке апстрима (в Part B апстрим не слал
+  `usage`, здесь слал; `long` p95 23.3 s — апстрим-столл). Поэтому «gpt2giga
+  быстрее v2 на simple» в этой таблице — артефакт условий, а не свойство
+  прокси; для строгого сравнения нужен один прогон
+  `--mode v1 --mode v2 --mode gpt2giga` (не выполнялся).
+- **`tok/s` / `out tok` medians не сравнимы напрямую**: в выборку попадают
+  короткие служебные запросы (генерация заголовка и т.п.), поэтому медиана
+  `out tok` у gpt2giga (9 на `simple`) ниже, чем у v1/v2 в Part B.
+- **gpt2giga — валидная benchmark-цель.** Прокси принимает те же кредами, что
+  и коннектор, и проходит все 5 сценариев; код gpt2giga не копировался
+  (см. [`THIRD-PARTY-NOTICES.md`](../THIRD-PARTY-NOTICES.md)).
+
+### Prerequisites / pitfalls (для повторного прогона)
+
+- Прокси должен читать `.env` **явно**: `gpt2giga --env-path "$HOME/gpt2giga-bench/.env"`.
+  Pydantic-settings читает `.env` в свой конфиг и **не** экспортирует переменные
+  в окружение процесса, поэтому проверка `/proc/<pid>/environ` на
+  `GIGACHAT_CA_BUNDLE_FILE` ничего не доказывает.
+- GigaChat из WSL требует российский Trusted Root CA. Без
+  `GIGACHAT_CA_BUNDLE_FILE=<russian_trusted_root_ca.pem>` прокси падает с
+  `ConnectError: [SSL: CERTIFICATE_VERIFY_FAILED]`. Файл CA — тот же, что у
+  Node: `local/config/opencode/certs/russian_trusted_root_ca.pem`.
+- Capture в harness для режима `gpt2giga` требует фикса `f8656a0`: плагин
+  матчит URL прокси через `PERF_MATCH` (раньше только `/giga|sberbank/`) и
+  сопоставляет запрос/ответ по FIFO `method+url`, когда нет заголовка `RqUID`
+  (коннектор не загружен).
 
 ---
 
@@ -211,5 +260,7 @@ B. scripts/bench/run-live-perf.sh --mode v2 --mode v1 --repeat 3   # logs/perf-{
    # if a later --mode aborts before analysis, aggregate manually:
    python3 scripts/bench/lib/analyze-perf.py /tmp/opencode/gigachat-perf/logs/perf-v2.jsonl \
                                                /tmp/opencode/gigachat-perf/logs/perf-v1.jsonl
-C. scripts/bench/run-live-perf.sh --mode gpt2giga --gpt2giga-url <url> --repeat 3   # pending: needs a running proxy
+C. scripts/bench/run-live-perf.sh --mode gpt2giga --gpt2giga-url http://127.0.0.1:8090/v2 --repeat 3
+   # requires a running gpt2giga proxy started with an explicit --env-path
+   # that includes GIGACHAT_CA_BUNDLE_FILE (see Part C pitfalls)
 ```

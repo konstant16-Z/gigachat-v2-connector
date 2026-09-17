@@ -64,6 +64,9 @@ scripts/smoke/run-long-session.sh --keep
 
 # Производительность (V1 / V2 / gpt2giga)
 scripts/bench/run-live-perf.sh --mode v2 --mode v1 --repeat 3
+# gpt2giga (нужен запущенный прокси с GIGACHAT_CA_BUNDLE_FILE):
+# scripts/bench/run-live-perf.sh --mode gpt2giga \
+#   --gpt2giga-url http://127.0.0.1:8090/v2 --repeat 3
 ```
 
 Критерии приёмки и шаблон результатов — в
@@ -161,18 +164,19 @@ Harness теперь ретраит сценарии по отдельности
 ## Остаётся на стороне пользователя
 
 1. **Пуш**: `cd /mnt/c/OpnCod_Proj/gigachat-v2-connector && git push origin main`
-   (в среде агента нет GitHub-аутентификации). Коммиты `b47b59c` и ранее уже
-   запушены; впереди — harness-фикс и release-доки.
+   (в среде агента нет GitHub-аутентификации). `origin/main` = `0ceaba4`;
+   локально впереди — release-доки (§26/§27/§33) и harness-фикс `f8656a0`
+   (capture gpt2giga).
 2. **Live-прогоны**:
    - OpenCode E2E (`run-smoke.sh`) — ✅ **PASS** (2026-09-17, attempt 1, все 6
      сценариев; см. выше);
    - long-session (`run-long-session.sh`) — ✅ **PASS** (2026-09-17, 10 шагов /
      22 tool interactions, hard FAIL 0, soft WARN 3; см.
      [`LONG_SESSION.md`](LONG_SESSION.md));
-   - live perf (`run-live-perf.sh`) — ✅ **v1 + v2 измерены** (2026-09-17,
-     5 сценариев × 3 повтора; медианы V2 ≈ V1, peak RSS не снимался; см.
-     [`PERFORMANCE.md`](PERFORMANCE.md)); ⏳ **gpt2giga** — нужен запущенный
-     прокси и `--gpt2giga-url`.
+   - live perf (`run-live-perf.sh`) — ✅ **v1 + v2 + gpt2giga измерены**
+     (2026-09-17, 5 сценариев × 3 повтора; медианы V2 ≈ V1, gpt2giga без
+     ошибок на стороне коннектора, peak RSS не снимался; см.
+     [`PERFORMANCE.md`](PERFORMANCE.md)).
 3. **Ротация секретов** (closeout): перевыпустить base64-`credentials` и
    старый PAT; после ротации повторить live-смок.
 4. **Живая проверка rollback** (`v2:false`) и повторный E2E.
