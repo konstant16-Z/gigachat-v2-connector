@@ -51,14 +51,22 @@ def load(paths: list[str]) -> list[dict]:
 
 
 def summarize(records: list[dict]) -> dict:
-    ttft = sorted(r["ttft_ms"] for r in records if r.get("ttft_ms") is not None)
-    total = sorted(r["total_ms"] for r in records if r.get("total_ms") is not None)
+    # Latency and token aggregates ignore failed responses (HTTP >= 400):
+    # their timing is a retry artifact and the connector never surfaced their
+    # tokens. They still count toward `count`/`errors` for transparency.
+    ok = [
+        r
+        for r in records
+        if not (isinstance(r.get("status"), int) and r["status"] >= 400)
+    ]
+    ttft = sorted(r["ttft_ms"] for r in ok if r.get("ttft_ms") is not None)
+    total = sorted(r["total_ms"] for r in ok if r.get("total_ms") is not None)
     tps = sorted(
-        r["tokens_per_sec"] for r in records if r.get("tokens_per_sec") is not None
+        r["tokens_per_sec"] for r in ok if r.get("tokens_per_sec") is not None
     )
-    tokens = [r["out_tokens"] for r in records if r.get("out_tokens") is not None]
+    tokens = [r["out_tokens"] for r in ok if r.get("out_tokens") is not None]
     estimates = [
-        r["estimate_tokens"] for r in records if r.get("estimate_tokens") is not None
+        r["estimate_tokens"] for r in ok if r.get("estimate_tokens") is not None
     ]
     sources: dict[str, int] = {}
     for r in records:
@@ -66,6 +74,7 @@ def summarize(records: list[dict]) -> dict:
         sources[key] = sources.get(key, 0) + 1
     return {
         "count": len(records),
+        "ok": len(ok),
         "sse": sum(1 for r in records if r.get("sse")),
         "ttft_ms": {"mean": mean(ttft), "p50": percentile(ttft, 50), "p95": percentile(ttft, 95)},
         "total_ms": {
@@ -119,14 +128,14 @@ def main() -> int:
 
     print("# Live performance (plan §33)\n")
     print(
-        "| Mode | Scenario | n | sse | TTFT p50 ms | TTFT p95 ms | Total p50 ms | "
+        "| Mode | Scenario | n | ok | sse | TTFT p50 ms | TTFT p95 ms | Total p50 ms | "
         "Total p95 ms | tok/s p50 | out tok p50 | errors | usage src |"
     )
-    print("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|")
+    print("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|")
     for mode, scenarios in analysis.items():
         for scenario, s in scenarios.items():
             print(
-                f"| {mode} | {scenario} | {s['count']} | {s['sse']} | "
+                f"| {mode} | {scenario} | {s['count']} | {s['ok']} | {s['sse']} | "
                 f"{fmt(s['ttft_ms']['p50'], 1)} | {fmt(s['ttft_ms']['p95'], 1)} | "
                 f"{fmt(s['total_ms']['p50'], 1)} | {fmt(s['total_ms']['p95'], 1)} | "
                 f"{fmt(s['tokens_per_sec']['p50'], 1)} | {fmt(s['out_tokens']['p50'], 0)} | "

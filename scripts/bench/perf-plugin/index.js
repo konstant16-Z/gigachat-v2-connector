@@ -26,14 +26,17 @@
 // already-translated GigaChat request with `stream: false` over a raw
 // node:http(s) connection so the raw upstream `usage` can be read. The replay
 // bypasses the session fetch hooks (no double translation, no extra capture
-// record) and runs concurrently with the stream, so this roughly doubles
-// upstream requests and is intended for a dedicated reference run, not for the
-// latency numbers. Credentials are only replayed in memory and never logged.
+// record), runs only after the stream completed (so it never competes with the
+// request being measured) and backs off on 429/5xx. It still roughly doubles
+// upstream requests, so it is intended for a dedicated reference run, not for
+// the latency numbers. Credentials are only replayed in memory and never
+// logged.
 import { randomUUID } from "node:crypto";
 import { appendFileSync, readFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { performance } from "node:perf_hooks";
+import { setTimeout as sleep } from "node:timers/promises";
 import { gunzipSync } from "node:zlib";
 
 const LOG = process.env.PERF_LOG ?? "/tmp/opencode/perf.jsonl";
@@ -192,44 +195,53 @@ function estimateTokens(text) {
 }
 
 /**
+ * Build the header object for a probe replay: copy the translated request's
+ * headers, drop length/host/encoding (recomputed or forced), and mark the
+ * replay so it is never captured even if a hook sees it.
+ */
+function buildProbeHeaders(headers, body) {
+  const out = {};
+  try {
+    for (const [name, value] of headers.entries()) {
+      const lower = name.toLowerCase();
+      if (lower === "content-length" || lower === "host" || lower === "accept-encoding") continue;
+      out[name] = value;
+    }
+  } catch {
+    // ignore header iteration failures; the probe is best-effort
+  }
+  out["Content-Type"] = "application/json";
+  out.Accept = "application/json";
+  out["Accept-Encoding"] = "identity";
+  out.RqUID = randomUUID();
+  out["X-Perf-Probe"] = "1";
+  out["Content-Length"] = Buffer.byteLength(body);
+  return out;
+}
+
+/**
  * Option 1: replay an already-translated GigaChat chat request with
  * `stream: false` over a raw node:http(s) connection and read the raw upstream
  * usage. Resolves to `{status, usage}` or `null`; never throws, never logs
  * request or response content.
  */
-function probeUsage(url, headers, body, timeoutMs) {
+function probeUsage(probe, timeoutMs) {
   return new Promise((resolve) => {
     let parsed;
     try {
-      parsed = new URL(url);
+      parsed = new URL(probe.url);
     } catch {
       resolve(null);
       return;
     }
     const secure = parsed.protocol === "https:";
     const send = secure ? httpsRequest : httpRequest;
-    const out = {};
-    try {
-      for (const [name, value] of headers.entries()) {
-        const lower = name.toLowerCase();
-        if (lower === "content-length" || lower === "host" || lower === "accept-encoding") continue;
-        out[name] = value;
-      }
-    } catch {
-      // ignore header iteration failures; the probe is best-effort
-    }
-    out["Content-Type"] = "application/json";
-    out.Accept = "application/json";
-    out["Accept-Encoding"] = "identity";
-    out.RqUID = randomUUID();
-    out["X-Perf-Probe"] = "1";
-    out["Content-Length"] = Buffer.byteLength(body);
     const options = {
       method: "POST",
       hostname: parsed.hostname,
       port: parsed.port || (secure ? 443 : 80),
       path: `${parsed.pathname}${parsed.search}`,
-      headers: out,
+      headers: probe.headers,
     };
     if (secure) {
       const ca = loadCaBundle();
@@ -263,8 +275,26 @@ function probeUsage(url, headers, body, timeoutMs) {
       req.destroy();
       settle(null);
     });
-    req.end(body);
+    req.end(probe.body);
   });
+}
+
+/**
+ * Probe with a small backoff on 429/5xx so a rate-limited replay still yields
+ * usage. The replay runs after the stream completed, so it never competes with
+ * the request being measured.
+ */
+async function probeUsageWithRetry(probe, timeoutMs, attempts = 3) {
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const result = await probeUsage(probe, timeoutMs);
+    if (!result) return null;
+    if (result.status === 429 || result.status >= 500) {
+      await sleep(1500 * (attempt + 1));
+      continue;
+    }
+    return result;
+  }
+  return null;
 }
 
 function write(record) {
@@ -302,7 +332,11 @@ const plugin = {
         if (USAGE_PROBE && url.includes("/chat/completions") && bodyJson && bodyJson.stream !== false) {
           try {
             const probeBody = JSON.stringify({ ...bodyJson, stream: false });
-            entry.probe = probeUsage(url, req.headers, probeBody, PROBE_TIMEOUT_MS);
+            entry.probe = {
+              url,
+              headers: buildProbeHeaders(req.headers, probeBody),
+              body: probeBody,
+            };
           } catch {
             entry.probe = null;
           }
@@ -382,10 +416,11 @@ const plugin = {
           let usage = upstreamUsage;
           let source = upstreamUsage ? "upstream" : "estimate";
           let probeUsageValue = null;
-          // Only await the probe when the surface had no usage of its own
-          // (V1); V2/gpt2giga already carry it, so no extra wait there.
-          if (!upstreamUsage && start.probe) {
-            const probed = await start.probe;
+          // Replay only when the surface had no usage of its own and the main
+          // request succeeded. The replay runs after the stream (so it never
+          // competes with the measured request) and backs off on 429/5xx.
+          if (!upstreamUsage && start.probe && record.status < 400) {
+            const probed = await probeUsageWithRetry(start.probe, PROBE_TIMEOUT_MS);
             probeUsageValue = probed?.usage ?? null;
             if (
               probed &&

@@ -168,13 +168,54 @@ changed):
 2. `scripts/bench/run-live-perf.sh --usage-probe` replays each streamed v1/v2
    chat request non-streaming over a raw `node:http(s)` connection (bypassing
    the session/connector hooks, so no double translation) and reads the raw
-   upstream `usage` (`usage_source="probe"`). The replay runs concurrently with
-   the stream and roughly doubles upstream requests — use it for a dedicated
-   usage/`tok/s` reference run, **not** for the latency numbers.
+   upstream `usage` (`usage_source="probe"`). The replay starts **after** the
+   stream finished (so it no longer competes with the measured request) and
+   retries on 429/5xx with a small backoff. It still roughly doubles upstream
+   requests — use it for a dedicated usage/`tok/s` reference run, **not** for
+   the latency numbers. A first version ran the replay concurrently; a live run
+   with it is recorded under «Usage-probe …» below.
+3. Responses with HTTP status ≥400 are excluded from the latency / `tok/s` /
+   `out tok` aggregates — their timing is a retry artifact and the connector
+   never surfaced their tokens. They still count toward `n`/`errors`; the table
+   also prints `ok` (non-error records).
 
 Records carry `usage_source` (`upstream` | `probe` | `estimate`) and
 `estimate_tokens`; the analyzer prints the per-group source breakdown. The
-numbers below predate both changes.
+numbers below predate these changes.
+
+### Usage-probe: exploratory live run — 2026-09-17
+
+Separate from the canonical run below, a full combined run was executed **with**
+the first, concurrent version of `--usage-probe` (before the post-stream/backoff
+rework):
+
+```bash
+scripts/bench/run-live-perf.sh --mode v1 --mode v2 --mode gpt2giga \
+  --gpt2giga-url http://127.0.0.1:8090/v2 --repeat 3 --usage-probe
+```
+
+What it established:
+
+- **The probe works against the real upstream.** Raw `node:https` reaches
+  `api.giga.chat` (CA via `PERF_CA_PEM`/`NODE_EXTRA_CA_CERTS`), bypasses the
+  session hooks and returns real `usage` for v1, e.g. v1 `large`
+  `{prompt: 14562, completion: 46}` with `usage_source="probe"`.
+- **Coverage:** v1 25/45 `probe`, v2 38/40 `upstream`, gpt2giga 34/49
+  `upstream`; the rest fell back to `estimate`.
+- **The concurrent replay triggers upstream rate limiting:** captured
+  `status=429` in v1 ×3 and v2 ×2 (gpt2giga 0). The connector retried and every
+  scenario completed, but the doubled load inflates this run's latency — TTFT
+  p50 rose well above the non-probe combined run (e.g. v2 `simple` 1307 vs
+  345 ms). **These are not valid latency numbers.**
+- Real completion tokens are now plausible across modes (e.g. `long` main
+  generation ≈1016–1230 for v2 and ≈1217–1274 for gpt2giga, small requests
+  4–15), but v1's main `long` generation was not probed, so coverage is
+  incomplete.
+
+This is why the probe now runs after the stream with a 429/5xx backoff. A clean
+usage-reference run (and a separate **no-probe** run for latency) is still
+pending; the numbers below are the older non-probe combined run.
+
 
 ### Result live-прогона — 2026-09-17 (combined v1/v2/gpt2giga)
 

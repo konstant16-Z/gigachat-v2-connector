@@ -177,6 +177,11 @@ Harness теперь ретраит сценарии по отдельности
      (2026-09-17, один прогон, 5 сценариев × 3 повтора, 45/45 `exit=0`;
      медианы в пределах апстрим-шума, `tok/s` между режимами не сравнимы,
      peak RSS не снимался; см. [`PERFORMANCE.md`](PERFORMANCE.md)).
+   - usage-probe (`--usage-probe`) — ✅ probe работает против живого
+     `api.giga.chat` (реальный `usage` для v1), но первый concurrent-вариант
+     ловил upstream 429 и искажал latency; probe переведён на
+     post-stream + backoff, чистый reference-прогон ещё не снят (см.
+     [`PERFORMANCE.md`](PERFORMANCE.md)).
 3. **Ротация секретов** (closeout): перевыпустить base64-`credentials` и
    старый PAT; после ротации повторить live-смок.
 4. **Живая проверка rollback** (`v2:false`) и повторный E2E.
