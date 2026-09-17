@@ -11,8 +11,8 @@ Split, because the sandbox has no `api.giga.chat` access and no GitHub push:
 | Part | Where | Status |
 |------|-------|--------|
 | **A. Mapping overhead** (CPU/time of the translation layers, no network) | reproducible anywhere | measured (below) |
-| **B. Live latency / tokens·s⁻¹** (real GigaChat, OpenCode, memory/CPU) | terminal with GigaChat access | measured 2026-09-17 for v1 + v2 (below); peak RSS to fill |
-| **C. gpt2giga comparison** | terminal with the gpt2giga proxy | measured 2026-09-17 (below) |
+| **B. Live latency / tokens·s⁻¹** (real GigaChat, OpenCode, memory/CPU) | terminal with GigaChat access | measured 2026-09-17, combined v1+v2+gpt2giga (below); peak RSS not captured |
+| **C. gpt2giga comparison** | terminal with the gpt2giga proxy | measured 2026-09-17 in the combined run (Part B table) |
 
 All four code gates stay green: `npx tsc --noEmit`, `bun test` (314 tests),
 `npx biome check .`, `bun run build`.
@@ -101,7 +101,7 @@ scripts/bench/run-live-perf.sh --mode v2 --mode v1 --repeat 3
 
 # one scenario, then inspect
 scripts/bench/run-live-perf.sh --mode v2 --scenario long
-scripts/bench/lib/analyze-perf.py /tmp/opencode/gigachat-perf/logs/perf-v2.jsonl
+scripts/bench/lib/analyze-perf.py /tmp/opencode/gigachat-combined.OfYsjm/work/logs/perf-v2.jsonl
 ```
 
 Modes:
@@ -115,124 +115,130 @@ Modes:
 Scenarios (read-only fixture, so repeats are stable): `simple`, `large`
 (reads a generated ~40 KB file), `tool`, `parallel`, `long` (~800-word answer).
 
-TTFT is the arrival time of the first streamed byte (equal to total for
-non-streaming); total is first-byte-to-last; tokens/sec = `completion_tokens` ÷
-total (falls back to `bytes/4` when the upstream omits usage). Process
-memory/CPU: run the harness under `/usr/bin/time -v` (peak RSS) or sample
-`ps` — record the numbers in the table below.
+### Measurement definitions and limitations
 
-### Result live-прогона — 2026-09-17
+- `ttft_ms` measures request-hook timestamp → first chunk read from the cloned
+  response body. This is a first-byte proxy, **not time to first model token**;
+  headers, role-only frames and buffering can affect it.
+- `total_ms` measures the same request-hook timestamp → end of clone reading,
+  including the wait before the first chunk. With a response body, non-streaming
+  responses use the same reader; TTFT and total are not necessarily equal.
+- `tokens_per_sec` = `out_tokens / total_ms × 1000`, not generation-only speed.
+  Where `usage` is absent, the implementation uses `round(text.length / 4)` on
+  the **entire decoded SSE text**, including protocol fields. This is neither
+  a byte count nor a reliable completion-token estimate; do not compare it with
+  usage-derived token throughput.
+- Percentiles select sorted element `round(p × (n−1))` (Python rounding), with
+  no interpolation. For even sample sizes, reported p50 can differ from the
+  conventional median (average of the two middle values).
+- `errors` counts captured HTTP statuses ≥400 only. SSE errors under HTTP 200,
+  interrupted reads and failures before capture are not represented reliably.
+  The capture reader swallows read exceptions; `exit=0` and `errors=0` alone
+  do not establish semantic completion of every scenario.
+- Without `RqUID`, correlation uses a method+URL FIFO. Concurrent responses
+  arriving out of order can be paired with the wrong request timestamp; a
+  missing response can also leave a stale queue entry. These effects can bias
+  latency percentiles, not just record attribution.
+- Modes run sequentially, not interleaved or randomized. Even one combined
+  invocation does not control upstream load, caching, request mix or tool loops.
+
+Process memory/CPU was not captured here. `/usr/bin/time -v` or `ps` sampling
+requires an explicit process scope; measuring the harness alone does not
+establish the peak memory of the separate proxy and all OpenCode processes.
+
+### Result live-прогона — 2026-09-17 (combined v1/v2/gpt2giga)
 
 Host: WSL2 (Linux 6.18.33.2-microsoft-standard-WSL2 x86_64) ·
 Bun 1.4.2 · Node v22.22.1 · OpenCode v2.0.5 · plugin 2.0.0 ·
 model `gigachat/GigaChat-2-Max` · 3 повтора на сценарий.
 
 ```bash
-scripts/bench/run-live-perf.sh --mode v2 --mode v1 --repeat 3
-python3 scripts/bench/lib/analyze-perf.py \
-  /tmp/opencode/gigachat-perf/logs/perf-v2.jsonl \
-  /tmp/opencode/gigachat-perf/logs/perf-v1.jsonl
+# все три режима в одной сессии, 5 сценариев × 3 повтора (45 запусков)
+scripts/bench/run-live-perf.sh --mode v1 --mode v2 --mode gpt2giga \
+  --gpt2giga-url http://127.0.0.1:8090/v2 --repeat 3
 ```
 
 `n` в таблице — число перехваченных chat-запросов (агент может сделать больше
-одного на прогон), не число повторов. `out tok` — из `usage` или fallback
-`bytes/4` (апстрим usage не слал, см. [`LONG_SESSION.md`](LONG_SESSION.md)).
+одного на прогон), не число повторов. Все 45 запусков `exit=0`; все
+перехваченные ответы `status=200`. См. ограничения измерений выше — `exit=0` и
+`errors=0` не доказывают семантическую полноту каждого стрима.
 
 | Mode | Scenario | n | sse | TTFT p50 ms | TTFT p95 ms | Total p50 ms | Total p95 ms | tok/s p50 | out tok p50 | errors |
 |------|----------|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| v1 | simple | 6 | 6 | 1201.1 | 5607.0 | 1202.4 | 5607.9 | 88.3 | 121 | 0 |
-| v2 | simple | 6 | 6 | 443.3 | 1381.8 | 445.1 | 1382.8 | 98.6 | 116 | 0 |
-| v1 | large | 6 | 6 | 1627.5 | 2727.0 | 1628.9 | 2727.4 | 96.4 | 123 | 0 |
-| v2 | large | 9 | 9 | 1517.8 | 1839.4 | 1520.9 | 1841.8 | 143.7 | 181 | 0 |
-| v1 | tool | 9 | 9 | 1737.4 | 2432.2 | 1746.3 | 2445.9 | 413.8 | 185 | 0 |
-| v2 | tool | 9 | 9 | 1608.6 | 3436.5 | 1610.1 | 3442.8 | 336.8 | 184 | 0 |
-| v1 | parallel | 15 | 15 | 1112.8 | 1822.7 | 1113.3 | 1824.7 | 135.4 | 122 | 0 |
-| v2 | parallel | 142 | 142 | 2752.9 | 4903.0 | 2753.8 | 4903.8 | 93.2 | 253 | 0 |
-| v1 | long | 6 | 6 | 608.8 | 18700.2 | 610.6 | 18716.7 | 301.3 | 184 | 0 |
-| v2 | long | 6 | 6 | 420.1 | 17539.8 | 423.3 | 18474.9 | 386.1 | 181 | 0 |
+| v1 | simple | 5 | 5 | 836.6 | 1447.5 | 838.2 | 1448.3 | 165.8 | 139 | 0 |
+| v1 | large | 8 | 8 | 1950.7 | 4081.9 | 1951.2 | 4082.3 | 96.7 | 164 | 0 |
+| v1 | tool | 8 | 8 | 1870.1 | 4494.1 | 1870.4 | 4513.5 | 336.8 | 185 | 0 |
+| v1 | parallel | 15 | 15 | 1384.2 | 2788.9 | 1384.7 | 2795.7 | 110.0 | 122 | 0 |
+| v1 | long | 6 | 6 | 1739.5 | 50721.0 | 1741.2 | 52875.4 | 259.2 | 185 | 0 |
+| v2 | simple | 6 | 6 | 345.0 | 1601.9 | 346.7 | 1603.5 | 84.7 | 116 | 0 |
+| v2 | large | 8 | 8 | 1865.7 | 2490.4 | 1867.0 | 2492.4 | 133.3 | 181 | 0 |
+| v2 | tool | 9 | 9 | 1893.3 | 6283.3 | 1897.1 | 6289.3 | 293.8 | 181 | 0 |
+| v2 | parallel | 9 | 9 | 1901.2 | 4106.2 | 1911.5 | 4107.6 | 391.9 | 259 | 0 |
+| v2 | long | 6 | 6 | 415.1 | 23000.0 | 417.4 | 29442.9 | 338.4 | 181 | 0 |
+| gpt2giga | simple | 9 | 9 | 405.7 | 1351.1 | 405.8 | 1356.2 | 17.8 | 9 | 0 |
+| gpt2giga | large | 11 | 11 | 1191.3 | 2345.3 | 1192.1 | 2346.3 | 27.3 | 30 | 0 |
+| gpt2giga | tool | 10 | 10 | 1426.3 | 2185.2 | 1432.6 | 2185.6 | 25.0 | 36 | 0 |
+| gpt2giga | parallel | 9 | 9 | 1733.3 | 3704.4 | 1740.8 | 3704.8 | 47.7 | 83 | 0 |
+| gpt2giga | long | 8 | 8 | 322.8 | 25808.3 | 322.8 | 29243.8 | 49.2 | 30 | 0 |
 
 #### Чтение
 
-- **V2 в пределах шума V1.** По медианам TTFT/total V2 не медленнее V1 на
-  `simple`/`large`/`tool`/`long` (V2 ниже на simple/long/tool; разница — это
-  разброс апстрима, а не маппинг, см. Part A: единицы µs).
-- **p95 ломают апстрим-столлы, не коннектор.** `long` p95 ≈ 18.7 s у обоих
-  режимов; `simple` v1 p95 5.6 s. Это зависания апстрима на одном из повторов.
-- **`parallel` (v2) не сопоставим.** n=142 против 15 у v1: модель в одном из
-  v2-прогонов вошла в петлю (`v2-parallel-2.log`, 74 KB), вместо параллельных
-  тулов выдавая `execute`-payload. Сценарий параллельных тулов подтверждён
-  отдельно: §26 smoke 05 (3 параллельных `tool_call` → 200) и offline
-  `long-session.test.ts` (2 в одном сообщении).
-- **Один run-level сбой:** `v1/large #2` — OAuth `fetchToken` timeout 10 s
-  (`[GigaCode] [ERROR] Interception translation failed: timeout of 10000ms exceeded`),
-  `exit=1`; запрос не дошёл до capture, поэтому `errors=0`. Сетевой флак общего
-  OAuth-пути (V1/V2), не маппинг.
-- **Peak RSS не снимался** (harness его не пишет); метод — запуск под
-  `/usr/bin/time -v` либо сэмплирование `ps`.
+- **V2 в пределах апстрим-шума V1.** По TTFT p50 V2 ниже на `simple`
+  (345 vs 837) и `long` (415 vs 1740), сопоставим на `large` (1866 vs 1951),
+  `tool` (1893 vs 1870) и `parallel` (1901 vs 1384). Разброс апстрима на
+  порядок больше µs-вклада маппинга (Part A), поэтому это не выделяет V2 как
+  систематически «медленнее» или «быстрее».
+- **p95 ломают апстрим-столлы, не коннектор.** `long` p95: 50.7 s (v1),
+  23.0 s (v2), 25.8 s (gpt2giga); Total p95 до 52.9 s. Это зависания апстрима
+  на отдельных повторах.
+- **`parallel` в этом прогоне сопоставим.** n=15/9/9 (в предыдущем отдельном
+  прогоне v2 уходил в петлю, n=142); все запросы вернулись `200`.
+- **`tok/s` и `out tok` между режимами не сравнимы.** У v1/v2 `usage` не было
+  ни в одной записи (0/42 и 0/38) → плагин считал `round(text.length/4)` по
+  всему SSE, включая протокол; у gpt2giga `usage` был в 33/47 записей → реальные
+  `completion_tokens`. Значения 139 vs 9 отражают разные методы, а не разную
+  длину ответов.
+- **Без run-level сбоев:** 45/45 `exit=0`, в отличие от предыдущей отдельной
+  сессии, где `v1/large #2` упал на OAuth `fetchToken` timeout.
+- **Peak RSS не снимался** (см. ограничения выше); метод — `/usr/bin/time -v`
+  либо сэмплирование `ps` с явным указанием процессов.
 
-**Вывод (plan §33):** live-медианы V2 ≈ V1; дополнительный state/mapping-слой
-стоит единицы µs (Part A) и не требует искусственной оптимизации latency.
-gpt2giga измерен отдельной сессией — см. Part C.
+**Вывод (plan §33):** в одном combined-прогоне медианы V2 и gpt2giga лежат в
+диапазоне апстрим-шума V1; дополнительный state/mapping-слой V2 стоит единицы µs
+(Part A) и не требует искусственной оптимизации latency. Сравнение режимов
+индикативное: прогон последовательный, не interleaved, и ограничения выше
+применяются.
 
 ---
 
 ## C. gpt2giga comparison
 
-**Статус: измерено 2026-09-17.** gpt2giga `0.3.0` запущен как отдельный
+**Статус: измерено 2026-09-17 в том же combined-прогоне, что Part B**
+(`--mode v1 --mode v2 --mode gpt2giga`). gpt2giga `0.3.0` — отдельный
 Python-прокси на `127.0.0.1:8090` с теми же GigaChat-кредами; форвардит на
-`https://api.giga.chat/v2/chat/completions`. Harness — тот же, что в Part B,
-тот же capture-плагин и те же 5 сценариев:
-
-```bash
-scripts/bench/run-live-perf.sh --mode gpt2giga \
-  --gpt2giga-url http://127.0.0.1:8090/v2 --repeat 3
-```
-
-`n` — перехваченные chat-запросы (агент делает больше одного на прогон), не
-число повторов. `out tok` — из `usage` (в этом прогоне апстрим usage слал:
-`usage` есть у 93 из 108 записей).
-
-| Mode | Scenario | n | sse | TTFT p50 ms | TTFT p95 ms | Total p50 ms | Total p95 ms | tok/s p50 | out tok p50 | errors |
-|------|----------|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| gpt2giga | simple   |  9 |  9 |   216.7 |   703.3 |   218.2 |   704.4 | 18.3 |   9 | 0 |
-| gpt2giga | large    | 12 | 12 |  1057.5 |  1728.5 |  1058.0 |  1730.1 | 29.3 |  33 | 0 |
-| gpt2giga | tool     | 11 | 11 |  1130.8 |  2656.1 |  1131.2 |  2664.6 | 44.1 |  36 | 0 |
-| gpt2giga | parallel | 68 | 68 |  2866.6 |  5171.5 |  2867.1 |  5172.1 | 54.1 | 153 | 0 |
-| gpt2giga | long     |  8 |  8 |   814.3 | 16370.0 |   814.3 | 23289.5 | 61.3 |  30 | 0 |
-
-Все 15 прогонов `exit=0`, все перехваченные ответы `status=200`; ошибок на
-стороне коннектора нет (в этом режиме коннектор не загружен — маппинг делает
-прокси).
-
-### TTFT p50: v1 / v2 / gpt2giga
+`https://api.giga.chat/v2/chat/completions`. Строки `gpt2giga` — в таблице
+Part B; ниже сведены TTFT p50 по сценариям.
 
 | Scenario | v1 | v2 | gpt2giga |
 |---|---:|---:|---:|
-| simple | 1201.1 | 443.3 | 216.7 |
-| large | 1627.5 | 1517.8 | 1057.5 |
-| tool | 1737.4 | 1608.6 | 1130.8 |
-| parallel | 1112.8 | 2752.9* | 2866.6* |
-| long | 608.8 | 420.1 | 814.3 |
-
-`*` — `parallel` несопоставим ни в одном из прогонов: модель уходила в петлю
-(n=142 у v2 и n=68 у gpt2giga против 15 у v1).
+| simple | 836.6 | 345.0 | 405.7 |
+| large | 1950.7 | 1865.7 | 1191.3 |
+| tool | 1870.1 | 1893.3 | 1426.3 |
+| parallel | 1384.2 | 1901.2 | 1733.3 |
+| long | 1739.5 | 415.1 | 322.8 |
 
 ### Чтение
 
-- **Порядок величины у всех трёх режимов один.** Разброс между режимами
-  (десятки–сотни мс) на порядок меньше вклада апстрима и его столов; µs-уровень
-  маппинга (Part A) в этих числах не виден.
-- **Кросс-сессионное сравнение — индикативное, не строгое.** Part B и Part C
-  сняты в разных сессиях при разной загрузке апстрима (в Part B апстрим не слал
-  `usage`, здесь слал; `long` p95 23.3 s — апстрим-столл). Поэтому «gpt2giga
-  быстрее v2 на simple» в этой таблице — артефакт условий, а не свойство
-  прокси; для строгого сравнения нужен один прогон
-  `--mode v1 --mode v2 --mode gpt2giga` (не выполнялся).
-- **`tok/s` / `out tok` medians не сравнимы напрямую**: в выборку попадают
-  короткие служебные запросы (генерация заголовка и т.п.), поэтому медиана
-  `out tok` у gpt2giga (9 на `simple`) ниже, чем у v1/v2 в Part B.
-- **gpt2giga — валидная benchmark-цель.** Прокси принимает те же кредами, что
-  и коннектор, и проходит все 5 сценариев; код gpt2giga не копировался
+- **Порядок величины один у всех трёх режимов.** Разница между режимами
+  (десятки–сотни мс) меньше вклада апстрима и его столов; µs-уровень маппинга
+  (Part A) в этих числах не виден. gpt2giga ниже на `large`/`tool`/`long`, v2 —
+  на `simple`, но прогон последовательный (не interleaved), поэтому разницу
+  нельзя приписать исключительно прокси или коннектору.
+- **`tok/s` / `out tok` не сравнимы:** у v1/v2 `usage` отсутствовал (fallback
+  по всему SSE), у gpt2giga `usage` был в большинстве записей; см. ограничения
+  в Part B.
+- **gpt2giga — валидная benchmark-цель.** Все перехваченные ответы `200`,
+  9–11 запросов на сценарий; код gpt2giga не копировался
   (см. [`THIRD-PARTY-NOTICES.md`](../THIRD-PARTY-NOTICES.md)).
 
 ### Prerequisites / pitfalls (для повторного прогона)
@@ -256,11 +262,9 @@ scripts/bench/run-live-perf.sh --mode gpt2giga \
 
 ```text
 A. bun scripts/bench/mapping-bench.ts                              # logs/mapping-bench.json
-B. scripts/bench/run-live-perf.sh --mode v2 --mode v1 --repeat 3   # logs/perf-{v1,v2}.jsonl + logs/perf-analysis.json
-   # if a later --mode aborts before analysis, aggregate manually:
-   python3 scripts/bench/lib/analyze-perf.py /tmp/opencode/gigachat-perf/logs/perf-v2.jsonl \
-                                               /tmp/opencode/gigachat-perf/logs/perf-v1.jsonl
-C. scripts/bench/run-live-perf.sh --mode gpt2giga --gpt2giga-url http://127.0.0.1:8090/v2 --repeat 3
-   # requires a running gpt2giga proxy started with an explicit --env-path
+B. scripts/bench/run-live-perf.sh --mode v1 --mode v2 --mode gpt2giga \
+     --gpt2giga-url http://127.0.0.1:8090/v2 --repeat 3            # combined: perf-{v1,v2,gpt2giga}.jsonl + logs/perf-analysis.json
+   # evidence (2026-09-17): /tmp/opencode/gigachat-combined.OfYsjm/{run.log,combined-analysis.json,work/logs}
+C. # requires a running gpt2giga proxy started with an explicit --env-path
    # that includes GIGACHAT_CA_BUNDLE_FILE (see Part C pitfalls)
 ```

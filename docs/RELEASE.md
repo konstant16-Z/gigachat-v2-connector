@@ -173,10 +173,10 @@ Harness теперь ретраит сценарии по отдельности
    - long-session (`run-long-session.sh`) — ✅ **PASS** (2026-09-17, 10 шагов /
      22 tool interactions, hard FAIL 0, soft WARN 3; см.
      [`LONG_SESSION.md`](LONG_SESSION.md));
-   - live perf (`run-live-perf.sh`) — ✅ **v1 + v2 + gpt2giga измерены**
-     (2026-09-17, 5 сценариев × 3 повтора; медианы V2 ≈ V1, gpt2giga без
-     ошибок на стороне коннектора, peak RSS не снимался; см.
-     [`PERFORMANCE.md`](PERFORMANCE.md)).
+   - live perf (`run-live-perf.sh`) — ✅ **combined v1 + v2 + gpt2giga**
+     (2026-09-17, один прогон, 5 сценариев × 3 повтора, 45/45 `exit=0`;
+     медианы в пределах апстрим-шума, `tok/s` между режимами не сравнимы,
+     peak RSS не снимался; см. [`PERFORMANCE.md`](PERFORMANCE.md)).
 3. **Ротация секретов** (closeout): перевыпустить base64-`credentials` и
    старый PAT; после ротации повторить live-смок.
 4. **Живая проверка rollback** (`v2:false`) и повторный E2E.
