@@ -9,9 +9,14 @@
  * terminator, exactly like the legacy path did.
  *
  * Tool-call ids are stable within one stream (assigned by the state machine).
- * `usage`/`tool_completed` events have no per-chunk OpenAI representation and
- * are intentionally mapped to nothing; `error` events are surfaced in the
+ * `tool_completed` events have no per-chunk OpenAI representation and are
+ * intentionally mapped to nothing. A `usage` event becomes a single trailing
+ * usage-only chunk (`choices: []`, the OpenAI `stream_options.include_usage`
+ * shape) emitted after the finish chunk; `error` events are surfaced in the
  * result so the integration layer can log/cancel instead of fabricating chunks.
+ *
+ * This module is only used by the V2 pipeline — V1 keeps its own transformer
+ * (`src/v2/response.ts`), whose streaming output is unchanged.
  */
 import { v4 } from "uuid";
 import type { OpenAiChatChunk } from "../types/gigachat";
@@ -38,6 +43,7 @@ export function internalToOpenAiChunks(
   const errors: string[] = [];
   let roleStarted = false;
   let callIndex = 0;
+  let usage: Extract<InternalStreamEvent, { kind: "usage" }> | undefined;
   const callIndexes = new Map<string, number>();
   const base = {
     id: meta.id ?? `chatcmp-${v4()}`,
@@ -80,8 +86,12 @@ export function internalToOpenAiChunks(
         break;
       }
       case "tool_completed":
-      case "usage":
         // No per-chunk OpenAI representation (documented).
+        break;
+      case "usage":
+        // Buffered and emitted once after the loop, so the usage-only chunk
+        // lands after the finish chunk (OpenAI include_usage ordering).
+        usage = ev;
         break;
       case "done":
         chunks.push(makeChunk(base, {}, ev.finishReason));
@@ -90,6 +100,17 @@ export function internalToOpenAiChunks(
         errors.push(ev.message);
         break;
     }
+  }
+  if (usage !== undefined) {
+    chunks.push({
+      ...base,
+      choices: [],
+      usage: {
+        prompt_tokens: usage.usage.promptTokens,
+        completion_tokens: usage.usage.completionTokens,
+        total_tokens: usage.usage.totalTokens,
+      },
+    });
   }
   return { chunks, errors };
 }

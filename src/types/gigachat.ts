@@ -139,4 +139,10 @@ export interface OpenAiChatChunk {
     delta: GigaChatChoiceDelta & { content?: string; tool_calls?: GigaChatToolCall[] };
     finish_reason: string | null;
   }>;
+  /**
+   * Trailing usage-only chunk (OpenAI `stream_options.include_usage` shape:
+   * empty `choices`). The V2 pipeline emits it when the upstream
+   * `response.message.done` frame carried `usage`; V1 streaming does not.
+   */
+  usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
 }

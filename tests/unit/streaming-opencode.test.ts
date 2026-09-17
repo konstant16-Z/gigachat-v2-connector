@@ -60,7 +60,7 @@ describe("internal → OpenAI chunks", () => {
     expect(chunks[0].choices[0].delta.reasoning_content).toBe("думаю");
   });
 
-  test("usage and tool_completed produce no chunks", () => {
+  test("usage becomes a trailing usage-only chunk; tool_completed produces none", () => {
     const { chunks } = internalToOpenAiChunks(
       [
         { kind: "usage", usage: { promptTokens: 1, completionTokens: 2, totalTokens: 3 } },
@@ -69,8 +69,19 @@ describe("internal → OpenAI chunks", () => {
       ],
       meta,
     );
-    expect(chunks).toHaveLength(1);
+    expect(chunks).toHaveLength(2);
     expect(chunks[0].choices[0].finish_reason).toBe("stop");
+    expect(chunks[1].choices).toEqual([]);
+    expect(chunks[1].usage).toEqual({
+      prompt_tokens: 1,
+      completion_tokens: 2,
+      total_tokens: 3,
+    });
+  });
+
+  test("streams without a usage event gain no trailing chunk", () => {
+    const { chunks } = internalToOpenAiChunks(textOnly, meta);
+    expect(chunks.some((c) => c.usage !== undefined)).toBe(false);
   });
 
   test("error events are surfaced in the result, not fabricated as chunks", () => {

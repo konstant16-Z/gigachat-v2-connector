@@ -127,7 +127,9 @@ Scenarios (read-only fixture, so repeats are stable): `simple`, `large`
   Where `usage` is absent, the implementation uses `round(text.length / 4)` on
   the **entire decoded SSE text**, including protocol fields. This is neither
   a byte count nor a reliable completion-token estimate; do not compare it with
-  usage-derived token throughput.
+  usage-derived token throughput. Since the V2 usage-chunk change (below), V2
+  streaming surfaces `usage` when the upstream sends it, so the fallback mainly
+  affects V1 (and V2 streams whose upstream omitted `usage`).
 - Percentiles select sorted element `round(p × (n−1))` (Python rounding), with
   no interpolation. For even sample sizes, reported p50 can differ from the
   conventional median (average of the two middle values).
@@ -145,6 +147,14 @@ Scenarios (read-only fixture, so repeats are stable): `simple`, `large`
 Process memory/CPU was not captured here. `/usr/bin/time -v` or `ps` sampling
 requires an explicit process scope; measuring the harness alone does not
 establish the peak memory of the separate proxy and all OpenCode processes.
+
+**V2 streaming usage (2026-09-17).** The V2 pipeline now emits a trailing
+usage-only chunk (`choices: []`, the OpenAI `stream_options.include_usage`
+shape) when the upstream `response.message.done` carries `usage` — see
+`src/streaming/opencode.ts`. V1 streaming is unchanged and still omits it. The
+combined-run numbers below were captured **before** this change, so their v2
+`out tok`/`tok/s` are still `text.length/4` fallbacks; a re-run with the current
+connector is needed to make v2 usage-derived.
 
 ### Result live-прогона — 2026-09-17 (combined v1/v2/gpt2giga)
 
@@ -193,11 +203,13 @@ scripts/bench/run-live-perf.sh --mode v1 --mode v2 --mode gpt2giga \
   на отдельных повторах.
 - **`parallel` в этом прогоне сопоставим.** n=15/9/9 (в предыдущем отдельном
   прогоне v2 уходил в петлю, n=142); все запросы вернулись `200`.
-- **`tok/s` и `out tok` между режимами не сравнимы.** У v1/v2 `usage` не было
-  ни в одной записи (0/42 и 0/38) → плагин считал `round(text.length/4)` по
-  всему SSE, включая протокол; у gpt2giga `usage` был в 33/47 записей → реальные
-  `completion_tokens`. Значения 139 vs 9 отражают разные методы, а не разную
-  длину ответов.
+- **`tok/s` и `out tok` между режимами не сравнимы в этом прогоне.** У v1/v2
+  `usage` не было ни в одной записи (0/42 и 0/38) → плагин считал
+  `round(text.length/4)` по всему SSE, включая протокол; у gpt2giga `usage` был
+  в 33/47 записей → реальные `completion_tokens`. Значения 139 vs 9 отражают
+  разные методы, а не разную длину ответов. Прогон снят **до** того, как V2
+  начал отдавать trailing usage-чанк (см. вставку выше), поэтому v2-числа здесь
+  ещё fallback; для usage-derived `tok/s` нужен повторный прогон.
 - **Без run-level сбоев:** 45/45 `exit=0`, в отличие от предыдущей отдельной
   сессии, где `v1/large #2` упал на OAuth `fetchToken` timeout.
 - **Peak RSS не снимался** (см. ограничения выше); метод — `/usr/bin/time -v`
@@ -234,9 +246,9 @@ Part B; ниже сведены TTFT p50 по сценариям.
   (Part A) в этих числах не виден. gpt2giga ниже на `large`/`tool`/`long`, v2 —
   на `simple`, но прогон последовательный (не interleaved), поэтому разницу
   нельзя приписать исключительно прокси или коннектору.
-- **`tok/s` / `out tok` не сравнимы:** у v1/v2 `usage` отсутствовал (fallback
-  по всему SSE), у gpt2giga `usage` был в большинстве записей; см. ограничения
-  в Part B.
+- **`tok/s` / `out tok` не сравнимы в этом прогоне:** у v1/v2 `usage`
+  отсутствовал (fallback по всему SSE), у gpt2giga `usage` был в большинстве
+  записей; прогон снят до правки V2 usage-чанка, см. ограничения в Part B.
 - **gpt2giga — валидная benchmark-цель.** Все перехваченные ответы `200`,
   9–11 запросов на сценарий; код gpt2giga не копировался
   (см. [`THIRD-PARTY-NOTICES.md`](../THIRD-PARTY-NOTICES.md)).

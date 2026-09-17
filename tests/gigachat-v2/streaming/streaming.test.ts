@@ -79,15 +79,22 @@ describe("§24 streaming zone — OpenAI chunk contract", () => {
     );
 
     const frames = parseDataLines(sse);
-    expect(frames).toHaveLength(3); // 2 content deltas + finish
+    expect(frames).toHaveLength(4); // 2 content deltas + finish + usage
     const content = frames
       .map((f) => chunk(f).choices?.[0]?.delta?.content)
       .filter((c): c is string => c !== undefined);
     expect(content).toEqual(["Привет", " мир!"]);
 
-    // First chunk starts the assistant role; the last chunk carries finish.
+    // First chunk starts the assistant role; the third chunk carries finish,
+    // the fourth is the trailing usage-only chunk.
     expect(chunk(frames[0]).choices?.[0]?.delta?.content).toBe("Привет");
-    expect(chunk(frames[frames.length - 1]).choices?.[0]?.finish_reason).toBe("stop");
+    expect(chunk(frames[2]).choices?.[0]?.finish_reason).toBe("stop");
+    expect(chunk(frames[3]).choices).toEqual([]);
+    expect((frames[3] as { usage?: unknown }).usage).toEqual({
+      prompt_tokens: 10,
+      completion_tokens: 5,
+      total_tokens: 15,
+    });
     expect(sse).toContain("data: [DONE]");
   });
 
