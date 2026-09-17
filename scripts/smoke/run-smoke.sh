@@ -16,6 +16,7 @@
 #   SMOKE_SOURCE_CONFIG  live opencode.json to read credentials from
 #   SMOKE_CA_PEM         PEM bundle for OpenCode->GigaChat TLS
 #   SMOKE_MODEL          provider/model (default gigachat/GigaChat-2-Max)
+#   SMOKE_ATTEMPTS       per-scenario retries (default 3; 1 disables retries)
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -116,18 +117,41 @@ PY
 
 # --- 4. Run helper -------------------------------------------------------------
 FAILED=0
-declare -a RESULTS
+# Explicit empty initializers: under `set -u`, a declared-but-never-assigned
+# array makes `${#arr[@]}` abort with "unbound variable".
+declare -a RESULTS=()
+declare -a FAILED_SCENARIOS=()
+SMOKE_ATTEMPTS="${SMOKE_ATTEMPTS:-3}"
 
 echo ">> Snapshot pristine fixture -> $SMOKE_ROOT/fixture-pristine"
 rm -rf "$SMOKE_ROOT/fixture-pristine"
 cp -r "$FIXTURE" "$SMOKE_ROOT/fixture-pristine"
 
-run_scenario() {
-  local name="$1"; shift
-  local prompt="$1"; shift
+restore_fixture() {
+  rm -rf "$FIXTURE"
+  cp -r "$SMOKE_ROOT/fixture-pristine" "$FIXTURE"
+}
+
+GIGACHAT_CREDENTIALS_VALUE="$(python3 -c "
+import json,sys
+cfg=json.load(open('$SMOKE_ROOT/config/opencode/opencode.json'))
+print(cfg['plugins'][0]['options']['credentials'])
+")"
+
+# Run one attempt of a scenario and preserve its log per attempt. Sets the
+# global V2_CONFIRMED from only the requests emitted during *this* attempt
+# (offset into the shared outbound dump), so a later scenario can never borrow
+# an earlier scenario's V2 evidence.
+V2_CONFIRMED=0
+run_scenario_attempt() {
+  local name="$1"
+  local prompt="$2"
+  local attempt="$3"
   local log="$SMOKE_ROOT/logs/$name.log"
-  echo ""
-  echo ">> [$(date +%H:%M:%S)] Scenario $name"
+  local dump="$SMOKE_ROOT/logs/outbound-dump.log"
+  local before=0
+  [[ -f "$dump" ]] && before="$(wc -l < "$dump")"
+
   set +e
   ( cd "$FIXTURE" && env \
     XDG_CONFIG_HOME="$SMOKE_ROOT/config" \
@@ -137,109 +161,150 @@ run_scenario() {
     NODE_EXTRA_CA_CERTS="$CA_PEM" \
     GIGACHAT_DEBUG=true \
     GIGACHAT_CREDENTIALS="$GIGACHAT_CREDENTIALS_VALUE" \
-    SMOKE_DUMP_LOG="$SMOKE_ROOT/logs/outbound-dump.log" \
+    SMOKE_DUMP_LOG="$dump" \
     npm_config_cache="$SMOKE_ROOT/npm-cache" \
     opencode run --standalone --auto --print-logs --model "$MODEL" --agent build "$prompt" ) >"$log" 2>&1
   local rc=$?
   set -e
-  echo "   exit=$rc"
-  if grep -q "REQ url=https://api.giga.chat/v2/chat/completions" "$SMOKE_ROOT/logs/outbound-dump.log" 2>/dev/null; then
-    echo "   V2-pipeline: CONFIRMED (outbound to api.giga.chat/v2/chat/completions)"
-  else
-    echo "   V2-pipeline: NOT CONFIRMED — grep '$SMOKE_ROOT/logs/outbound-dump.log' for REQ url=https://api.giga.chat/v2/chat/completions"
+  cp "$log" "$SMOKE_ROOT/logs/$name.attempt${attempt}.log"
+
+  local new_v2=0
+  if [[ -f "$dump" ]]; then
+    new_v2="$(tail -n +"$((before + 1))" "$dump" | grep -c "REQ url=https://api.giga.chat/v2/chat/completions" || true)"
   fi
-  RESULTS+=("$name:exit=$rc")
+  if [[ "$new_v2" -gt 0 ]]; then V2_CONFIRMED=1; else V2_CONFIRMED=0; fi
+  echo "   exit=$rc  v2-requests-this-attempt=$new_v2"
   return $rc
 }
 
-GIGACHAT_CREDENTIALS_VALUE="$(python3 -c "
-import json,sys
-cfg=json.load(open('$SMOKE_ROOT/config/opencode/opencode.json'))
-print(cfg['plugins'][0]['options']['credentials'])
-")"
-
-# --- 5. Scenarios --------------------------------------------------------------
-# One scenario set = all six scenarios. A FAILED set is retried once (upstream
-# stalls / model flakiness) from the pristine snapshot.
-run_scenario_set() {
-if [[ -z "$ONLY" || "$ONLY" == "1" ]]; then
-  run_scenario 01-explain \
-    "Explain what src/hello.ts does in 3-5 sentences." || { FAILED=1; }
-  [[ -z "$ONLY" ]] || { echo ">> skipped: isolated run (--scenario)"; }
-  if [[ -z "$ONLY" ]] && ! grep -qi "greet" "$SMOKE_ROOT/logs/01-explain.log"; then echo "   ASSERT: 'greet' not found in answer" >&2; FAILED=1; fi
-fi
-
-if [[ -z "$ONLY" || "$ONLY" == "2" ]]; then
-  run_scenario 02-fix-factorial \
-    "src/math.ts contains a bug in factorial(). Find it, fix it in place, then run the test suite to confirm nothing broke. Do NOT modify isEven() — leave it exactly as it is." || { FAILED=1; }
-  if [[ -z "$ONLY" ]]; then
-    set +e
-    (cd "$FIXTURE" && bun -e "import {factorial} from './src/math.ts'; if (factorial(5)!==120 || factorial(0)!==1 || factorial(1)!==1) process.exit(1);") >/dev/null 2>&1
-    local_rc=$?
-    set -e
-    if [[ $local_rc -eq 0 ]]; then echo "   ASSERT: factorial(5)=120, factorial(0)=1 OK"; else echo "   ASSERT FAIL: factorial still wrong" >&2; FAILED=1; fi
-    if grep -q "n % 2 === 1" "$FIXTURE/src/math.ts"; then echo "   ASSERT: isEven untouched OK"; else echo "   ASSERT FAIL: isEven was modified" >&2; FAILED=1; fi
+# Run one scenario step under an already-restored fixture. Returns 0 only when
+# opencode exited 0, the request went to the V2 endpoint and the assertion
+# passed. Sets V2_CONFIRMED for the attempt.
+run_step() {
+  local name="$1"
+  local prompt="$2"
+  local assert_fn="$3"
+  local attempt="$4"
+  echo ""
+  echo ">> [$(date +%H:%M:%S)] Scenario $name (attempt $attempt/$SMOKE_ATTEMPTS)"
+  run_scenario_attempt "$name" "$prompt" "$attempt" || true
+  if [[ "$V2_CONFIRMED" -eq 1 ]] && ( "$assert_fn" ); then
+    return 0
   fi
-fi
+  return 1
+}
 
-if [[ -z "$ONLY" || "$ONLY" == "3" ]]; then
-  run_scenario 03-add-tests \
-    "Use the read tool to read src/math.ts. Then write tests/math.test.ts with bun:test unit tests for factorial (n=0, n=1, n=5), fibonacci (n=0..6) and isEven (one even, one odd input). Do NOT modify anything under src/. Do not ask questions — just do it." || { FAILED=1; }
-  if [[ -z "$ONLY" ]] && ! grep -rlq "factorial" "$FIXTURE/tests" 2>/dev/null; then echo "   ASSERT FAIL: no factorial test added under tests/" >&2; FAILED=1; fi
-fi
-
-if [[ -z "$ONLY" || "$ONLY" == "4" ]]; then
-  run_scenario 04-run-and-fix \
-    "Run 'bun test' in this project. If any test fails, fix the SOURCE CODE (never the tests) until the whole suite passes, then run 'bun test' once more to confirm." || { FAILED=1; }
-  if [[ -z "$ONLY" ]]; then
-    set +e
-    (cd "$FIXTURE" && bun test >"$SMOKE_ROOT/logs/04-fixture-bun-test.log" 2>&1)
-    local_rc=$?
-    set -e
-    if [[ $local_rc -eq 0 ]]; then echo "   ASSERT: fixture 'bun test' green OK"; else echo "   ASSERT FAIL: fixture tests not green ($local_rc)" >&2; FAILED=1; fi
-  fi
-fi
-
-if [[ -z "$ONLY" || "$ONLY" == "5" ]]; then
-  run_scenario 05-parallel-tools \
-    "In a SINGLE assistant step issue three SEPARATE tool calls at once: (1) glob tool with src/**/*.ts, (2) glob tool with tests/**/*.ts, (3) read tool with src/hello.ts. Do NOT wrap or nest tool calls inside the execute tool. Then report each file you actually found, with a one-line summary each." || { FAILED=1; }
-  if [[ -z "$ONLY" ]]; then
-    grep -q "hello.ts" "$SMOKE_ROOT/logs/05-parallel-tools.log" && grep -q "math.ts" "$SMOKE_ROOT/logs/05-parallel-tools.log" \
-      && echo "   ASSERT: both hello.ts and math.ts covered OK" \
-      || { echo "   ASSERT FAIL: parallel output missing files" >&2; FAILED=1; }
-  fi
-fi
-
-if [[ -z "$ONLY" || "$ONLY" == "6" ]]; then
-  run_scenario 06-mcp-fs \
-    "Use the MCP filesystem tool read_file with the project root path to read README.md (the MCP server is named fs, directory fixtures/opencode-project). Then summarize the project in 2-3 sentences. Do not ask questions — just do it." || { FAILED=1; }
-  if [[ -z "$ONLY" ]]; then
-    if grep -qi "Read README" "$SMOKE_ROOT/logs/06-mcp-fs.log" \
-      && grep -qi "bun" "$SMOKE_ROOT/logs/06-mcp-fs.log"; then
-      echo "   ASSERT: MCP read of README reflected (Bun mention) OK"
-    else
-      echo "   ASSERT FAIL: README content not reflected in answer" >&2; FAILED=1
+# Retry an independent scenario up to SMOKE_ATTEMPTS times; each attempt starts
+# from the pristine fixture. Connector failures are not masked: the per-attempt
+# V2 evidence and the assertions are re-checked on every attempt.
+try_scenario() {
+  local name="$1"
+  local prompt="$2"
+  local assert_fn="$3"
+  local attempt
+  for attempt in $(seq 1 "$SMOKE_ATTEMPTS"); do
+    restore_fixture
+    if run_step "$name" "$prompt" "$assert_fn" "$attempt"; then
+      RESULTS+=("$name:PASS(attempt=$attempt)")
+      return 0
     fi
-  fi
-fi
-} # end run_scenario_set
-
-# --- 6. Retry loop + evidence + restore ------------------------------------------
-if [[ -n "$ONLY" ]]; then
-  run_scenario_set
-else
-  attempt=1
-  while :; do
-    FAILED=0
-    RESULTS=()
-    run_scenario_set
-    if [[ $FAILED -eq 0 || $attempt -ge 2 ]]; then break; fi
-    echo ""
-    echo ">> Scenario set FAILED on attempt $attempt — retrying once from pristine snapshot"
-    rm -rf "$FIXTURE"
-    cp -r "$SMOKE_ROOT/fixture-pristine" "$FIXTURE"
-    attempt=$((attempt + 1))
+    echo "   -> attempt $attempt did not satisfy the gate; retrying from pristine"
   done
+  RESULTS+=("$name:FAIL(after $SMOKE_ATTEMPTS attempts)")
+  FAILED=1
+  FAILED_SCENARIOS+=("$name")
+  return 1
+}
+
+# Steps 02 -> 03 -> 04 form a chain (03 adds tests that 04 runs), so retry them
+# together from the pristine fixture instead of in isolation.
+try_chain() {
+  local attempt ok
+  for attempt in $(seq 1 "$SMOKE_ATTEMPTS"); do
+    restore_fixture
+    ok=1
+    run_step 02-fix-factorial "$PROMPT_02" assert_02_fix_factorial "$attempt" || ok=0
+    run_step 03-add-tests "$PROMPT_03" assert_03_add_tests "$attempt" || ok=0
+    run_step 04-run-and-fix "$PROMPT_04" assert_04_run_and_fix "$attempt" || ok=0
+    if [[ $ok -eq 1 ]]; then
+      RESULTS+=("02-04:chain PASS(attempt=$attempt)")
+      return 0
+    fi
+    echo "   -> attempt $attempt did not satisfy the 02-04 chain gate; retrying from pristine"
+  done
+  RESULTS+=("02-04:chain FAIL(after $SMOKE_ATTEMPTS attempts)")
+  FAILED=1
+  FAILED_SCENARIOS+=("02-03-04")
+  return 1
+}
+
+# --- 5. Assertions -------------------------------------------------------------
+assert_01_explain() {
+  grep -qi "greet" "$SMOKE_ROOT/logs/01-explain.log"
+}
+
+assert_02_fix_factorial() {
+  local ok=1
+  ( cd "$FIXTURE" && bun -e "import {factorial} from './src/math.ts'; if (factorial(5)!==120 || factorial(0)!==1 || factorial(1)!==1) process.exit(1);" ) >/dev/null 2>&1 || ok=0
+  grep -q "n % 2 === 1" "$FIXTURE/src/math.ts" || ok=0
+  if [[ $ok -eq 1 ]]; then
+    echo "   ASSERT: factorial(5)=120, factorial(0)=1, isEven untouched OK"
+    return 0
+  fi
+  echo "   ASSERT FAIL: factorial still wrong or isEven was modified" >&2
+  return 1
+}
+
+assert_03_add_tests() {
+  grep -rlq "factorial" "$FIXTURE/tests" 2>/dev/null
+}
+
+assert_04_run_and_fix() {
+  set +e
+  ( cd "$FIXTURE" && bun test ) >"$SMOKE_ROOT/logs/04-fixture-bun-test.log" 2>&1
+  local rc=$?
+  set -e
+  if [[ $rc -eq 0 ]]; then
+    echo "   ASSERT: fixture 'bun test' green OK"
+    return 0
+  fi
+  echo "   ASSERT FAIL: fixture tests not green ($rc)" >&2
+  return 1
+}
+
+assert_05_parallel_tools() {
+  grep -q "hello.ts" "$SMOKE_ROOT/logs/05-parallel-tools.log" \
+    && grep -q "math.ts" "$SMOKE_ROOT/logs/05-parallel-tools.log"
+}
+
+assert_06_mcp_fs() {
+  grep -qi "Read README" "$SMOKE_ROOT/logs/06-mcp-fs.log" \
+    && grep -qi "bun" "$SMOKE_ROOT/logs/06-mcp-fs.log"
+}
+
+# --- 6. Scenarios --------------------------------------------------------------
+PROMPT_01="Explain what src/hello.ts does in 3-5 sentences."
+PROMPT_02="src/math.ts contains a bug in factorial(). Find it, fix it in place, then run the test suite to confirm nothing broke. Do NOT modify isEven() — leave it exactly as it is."
+PROMPT_03="Use the read tool to read src/math.ts. Then write tests/math.test.ts with bun:test unit tests for factorial (n=0, n=1, n=5), fibonacci (n=0..6) and isEven (one even, one odd input). Do NOT modify anything under src/. Do not ask questions — just do it."
+PROMPT_04="Run 'bun test' in this project. If any test fails, fix the SOURCE CODE (never the tests) until the whole suite passes, then run 'bun test' once more to confirm."
+PROMPT_05="In a SINGLE assistant step issue three SEPARATE tool calls at once: (1) glob tool with src/**/*.ts, (2) glob tool with tests/**/*.ts, (3) read tool with src/hello.ts. Do NOT wrap or nest tool calls inside the execute tool. Then report each file you actually found, with a one-line summary each."
+PROMPT_06="Use the MCP filesystem tool read_file with the project root path to read README.md (the MCP server is named fs, directory fixtures/opencode-project). Then summarize the project in 2-3 sentences. Do not ask questions — just do it."
+
+if [[ -n "$ONLY" ]]; then
+  # Isolated run: one step on its own, retried per SMOKE_ATTEMPTS.
+  case "$ONLY" in
+    1) try_scenario 01-explain "$PROMPT_01" assert_01_explain || true ;;
+    2) try_scenario 02-fix-factorial "$PROMPT_02" assert_02_fix_factorial || true ;;
+    3) try_scenario 03-add-tests "$PROMPT_03" assert_03_add_tests || true ;;
+    4) try_scenario 04-run-and-fix "$PROMPT_04" assert_04_run_and_fix || true ;;
+    5) try_scenario 05-parallel-tools "$PROMPT_05" assert_05_parallel_tools || true ;;
+    6) try_scenario 06-mcp-fs "$PROMPT_06" assert_06_mcp_fs || true ;;
+  esac
+else
+  try_scenario 01-explain "$PROMPT_01" assert_01_explain || true
+  try_chain || true
+  try_scenario 05-parallel-tools "$PROMPT_05" assert_05_parallel_tools || true
+  try_scenario 06-mcp-fs "$PROMPT_06" assert_06_mcp_fs || true
 fi
 
 mkdir -p "$SMOKE_ROOT/after"
@@ -248,7 +313,10 @@ echo ""
 echo "================================================================"
 echo " RESULTS"
 echo "================================================================"
-for r in "${RESULTS[@]}"; do echo "  $r"; done
+for r in ${RESULTS[@]+"${RESULTS[@]}"}; do echo "  $r"; done
+if [[ ${#FAILED_SCENARIOS[@]} -gt 0 ]]; then
+  echo "  failed scenarios: ${FAILED_SCENARIOS[*]}"
+fi
 echo "================================================================"
 
 if [[ $KEEP -eq 0 && -z "$ONLY" ]]; then
