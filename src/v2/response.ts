@@ -148,14 +148,29 @@ export function validateMessagePayload(content: string): void {
 
 /**
  * Transform a GigaChat SSE byte stream into an OpenAI-compatible SSE stream.
+ * `onEnd` (optional) fires once: `completed: true` on normal close,
+ * `completed: false` when the consumer cancels (plan §32).
  */
-function makeSseTransformer(input: ReadableStream<Uint8Array>): ReadableStream<Uint8Array> {
+function makeSseTransformer(
+  input: ReadableStream<Uint8Array>,
+  onEnd?: (info: { completed: boolean }) => void
+): ReadableStream<Uint8Array> {
   const reader = input.getReader();
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
   const streamToolCallIds = new Map<string, string>();
   let buffer = "";
   let done = false;
+  let ended = false;
+  const reportEnd = (completed: boolean): void => {
+    if (ended) return;
+    ended = true;
+    try {
+      onEnd?.({ completed });
+    } catch {
+      // ignore hook failures
+    }
+  };
 
   const processSseLine = (line: string, controller: ReadableStreamDefaultController<Uint8Array>): void => {
     const trimmed = line.trim();
@@ -206,24 +221,32 @@ function makeSseTransformer(input: ReadableStream<Uint8Array>): ReadableStream<U
           }
         }
         controller.close();
+        reportEnd(true);
       }
     },
     async cancel(reason) {
       try {
         await reader.cancel(reason);
       } catch {}
+      reportEnd(false);
     }
   });
 }
 
 /** Wrap a streaming upstream response in the translated SSE stream. */
 export async function translateStreamingResponse(
-  response: Response
+  response: Response,
+  onEnd?: (info: { completed: boolean }) => void
 ): Promise<Response> {
   if (!response.body) {
+    try {
+      onEnd?.({ completed: true });
+    } catch {
+      // ignore hook failures
+    }
     return new Response("", { status: response.status, headers: SSE_HEADERS });
   }
-  return new Response(makeSseTransformer(response.body), {
+  return new Response(makeSseTransformer(response.body, onEnd), {
     status: response.status,
     headers: SSE_HEADERS
   });

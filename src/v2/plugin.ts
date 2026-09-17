@@ -19,6 +19,14 @@ import type { V2Pipeline } from "../translation/v2-pipeline.js";
 import { backoffDelayMs, loadRetryConfig, sleep } from "./retry.js";
 import { isRetryableStatus } from "../gigachat/v2/errors.js";
 import {
+  RequestObservation,
+  emitObservation,
+  endpointOf,
+  errorLike,
+  normalizeErrorCategory,
+} from "../core/observability.js";
+import type { ObservationFields } from "../core/observability.js";
+import {
   registerGigaEndpoint,
   isGigaProvider,
   isKnownGigaHost,
@@ -39,6 +47,9 @@ interface PendingRequest {
 
 /** Pending requests keyed by RqUID, consumed by the response hook. */
 const pendingRequests = new Map<string, PendingRequest>();
+
+/** Per-request observations keyed by RqUID (plan §32), consumed by the response hook. */
+const observations = new Map<string, RequestObservation>();
 
 type Options = {
   baseURL?: string;
@@ -186,6 +197,7 @@ export const plugin = {
     }
 
     await ctx.session.hook("http.request", async (event: any) => {
+      let rquid: string | undefined;
       try {
         const requestUrl: string = event?.request?.url;
         const host = tryHost(requestUrl);
@@ -226,20 +238,35 @@ export const plugin = {
         }
 
         log(`Intercepting ${event.request.method} request to: ${resolvedTarget}`);
+        const rawBody = await event.request.arrayBuffer();
+        // Parse the OpenAI chat body early so observability can report the
+        // requested model; a parse failure keeps the legacy "forward raw {}"
+        // behaviour (the original body is still forwarded on the V1 path).
+        let openAiBody: any = {};
+        if (isChat && rawBody.byteLength > 0) {
+          try {
+            openAiBody = JSON.parse(new TextDecoder().decode(rawBody));
+          } catch (e) {
+            warn("Failed to parse OpenAI request body, forwarding raw:", e);
+          }
+        }
+        rquid = v4();
+        const observedModel =
+          typeof openAiBody?.model === "string" && openAiBody.model ? openAiBody.model : undefined;
+        observations.set(
+          rquid,
+          new RequestObservation({
+            requestId: rquid,
+            endpoint: endpointOf(resolvedTarget),
+            ...(observedModel !== undefined ? { model: observedModel } : {})
+          })
+        );
+
         const { token } = await authManager.getAccessToken();
         const verifySsl = authManager.getVerifySsl();
         const caBundle = authManager.getCaBundle();
-        const rawBody = await event.request.arrayBuffer();
 
         if (isChat) {
-          let openAiBody: any = {};
-          if (rawBody.byteLength > 0) {
-            try {
-              openAiBody = JSON.parse(new TextDecoder().decode(rawBody));
-            } catch (e) {
-              warn("Failed to parse OpenAI request body, forwarding raw:", e);
-            }
-          }
           let gigaBody: unknown;
           const targetUrl = resolvedTarget;
           if (v2 && pipeline) {
@@ -253,7 +280,7 @@ export const plugin = {
             Accept: "application/json",
             Authorization: `Bearer ${token}`,
             "Content-Type": "application/json",
-            RqUID: v4()
+            RqUID: rquid
           });
           const body = JSON.stringify(gigaBody);
           event.request = new Request(targetUrl, {
@@ -263,7 +290,7 @@ export const plugin = {
           });
           // Snapshot for retry (plan §19): chat completions are safe to retry
           // on transient errors; files/direct are not (non-idempotent).
-          pendingRequests.set(headers.get("RqUID") ?? "", {
+          pendingRequests.set(rquid, {
             url: targetUrl,
             method: "POST",
             headers,
@@ -276,7 +303,7 @@ export const plugin = {
           headers.delete("x-opencode-provider-marker");
           headers.set("Accept", "application/json");
           headers.set("Authorization", `Bearer ${token}`);
-          headers.set("RqUID", v4());
+          headers.set("RqUID", rquid);
           event.request = new Request(resolvedTarget, {
             method: event.request.method,
             headers,
@@ -285,6 +312,16 @@ export const plugin = {
         }
       } catch (err) {
         const cleanErr = sanitizeError(err);
+        // Report the failed request (plan §32) and drop its observation so the
+        // registry cannot leak if the response hook never runs. Category from
+        // the sanitized error so an axios 429/4xx maps correctly.
+        if (rquid) {
+          const fields = observations
+            .get(rquid)
+            ?.finish({ errorCategory: normalizeErrorCategory(errorLike(cleanErr)) });
+          if (fields) emitObservation(fields);
+          observations.delete(rquid);
+        }
         if (cleanErr.status === 429) {
           authManager.blockActiveAccount("HTTP 429 Rate Limited");
         } else if (cleanErr.status === 403) {
@@ -296,19 +333,35 @@ export const plugin = {
     });
 
     await ctx.session.hook("http.response", async (event: any) => {
+      const rquid: string = event?.request?.headers?.get?.("RqUID") ?? "";
+      const observation = rquid ? observations.get(rquid) : undefined;
+      const statusFields = (status: number): ObservationFields => ({
+        status,
+        ...(status >= 400 ? { errorCategory: normalizeErrorCategory({ status }) } : {})
+      });
+      // Emit exactly one observation per request and drop the registry entry
+      // (idempotent: SSE completion, JSON completion and the error path may all
+      // race to call it — `finish` only returns fields once).
+      const finish = (extra: ObservationFields = {}): void => {
+        const fields = observation?.finish(extra);
+        if (fields) emitObservation(fields);
+        if (rquid) observations.delete(rquid);
+      };
       try {
         const requestUrl: string = event?.request?.url;
         const host = tryHost(requestUrl);
         // Only translate responses for known GigaChat hosts (plan §31). The
         // request hook never rewrites or stores anything for an unknown host,
         // so a provider-id-only match must not be treated as GigaChat wire.
-        if (!isKnownGigaHost(host) || !event.response) return;
+        if (!isKnownGigaHost(host) || !event.response) {
+          finish({ errorCategory: "unknown" });
+          return;
+        }
 
         // Retry/backoff (plan §19): 429/5xx → exponential backoff; 401 → token
         // refresh + one retry. Only for chat completions (idempotent); files/
         // direct calls pass through. Uses the snapshot registered in the
         // request hook, keyed by RqUID.
-        const rquid = event?.request?.headers?.get?.("RqUID") ?? "";
         const stored = pendingRequests.get(rquid);
         if (stored && (isRetryableStatus(event.response.status) || event.response.status === 401)) {
           const retryConfig = loadRetryConfig();
@@ -328,6 +381,7 @@ export const plugin = {
             } else {
               await sleep(backoffDelayMs(attempt, retryConfig));
             }
+            observation?.retry();
             try {
               const fetchOpts: RequestInit = {
                 method: stored.method,
@@ -355,16 +409,33 @@ export const plugin = {
         const contentType = event.response.headers.get("content-type") || "";
         if (v2 && pipeline) {
           const isChat = typeof requestUrl === "string" && requestUrl.includes("/chat/completions");
-          if (!isChat) return; // files/direct calls pass through untouched in V2 mode
-          event.response = contentType.includes("text/event-stream")
-            ? pipeline.streamingResponse(event.response, sessionKey(event))
-            : await pipeline.jsonResponseFromUpstream(event.response, sessionKey(event));
+          if (!isChat) {
+            // files/direct calls pass through untouched in V2 mode, but their
+            // observation still completes here.
+            finish(statusFields(event.response.status));
+            return;
+          }
+          if (contentType.includes("text/event-stream")) {
+            const status = event.response.status;
+            event.response = pipeline.streamingResponse(event.response, sessionKey(event), {
+              onEnd: (info) =>
+                finish({ status, stream: info.completed ? "completed" : "cancelled" })
+            });
+          } else {
+            event.response = await pipeline.jsonResponseFromUpstream(event.response, sessionKey(event));
+            finish(statusFields(event.response.status));
+          }
         } else if (contentType.includes("text/event-stream")) {
-          event.response = await translateStreamingResponse(event.response);
+          const status = event.response.status;
+          event.response = await translateStreamingResponse(event.response, (info) =>
+            finish({ status, stream: info.completed ? "completed" : "cancelled" })
+          );
         } else {
           event.response = await translateJsonResponse(event.response);
+          finish(statusFields(event.response.status));
         }
       } catch (err) {
+        finish({ errorCategory: normalizeErrorCategory(errorLike(err)) });
         error("Response translation failed:", err instanceof Error ? err.message : String(err));
         throw err;
       }
@@ -372,10 +443,16 @@ export const plugin = {
 
     await ctx.tool.hook("execute.before", async (event: any) => {
       log(`Executing tool: ${event?.tool} (Call ID: ${event?.callID ?? ""})`);
+      emitObservation({
+        ...(typeof event?.tool === "string" && event.tool ? { tool: event.tool } : {}),
+        ...(typeof event?.callID === "string" && event.callID ? { callId: event.callID } : {})
+      });
     });
 
     log("GigaCodeConnectorPlugin (V2) loaded successfully.");
     return () => {
+      pendingRequests.clear();
+      observations.clear();
       log("GigaCodeConnectorPlugin (V2) unloaded.");
     };
   }
@@ -390,4 +467,12 @@ export default plugin;
  */
 export function pendingRequestCount(): number {
   return pendingRequests.size;
+}
+
+/**
+ * Diagnostic: number of per-request observations awaiting completion (plan §32).
+ * Used in tests to verify the registry does not leak.
+ */
+export function pendingObservationCount(): number {
+  return observations.size;
 }

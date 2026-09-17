@@ -35,7 +35,7 @@ Statuses follow the definitions from the plan:
 | Capabilities (map) | – | `getModelCapabilities(model)` (plan §17); filtering enforced at boundaries | `SUPPORTED` (`PARTIAL`) | Live-verified defaults for all supported models; unknown-model fallback keeps verified set. Boundary checks reject unsupported: unknown builtins / `code_interpreter` (live 422), HTTP image URLs, `json_object` formats. Map module + unit tests (`tests/unit/capabilities.test.ts`). |
 | Cancellation | `reader.cancel` in SSE transformer | supported (same) | `SUPPORTED` | Current implementation already respects cancellation. |
 | Concurrency | OAuth refresh de‑duplicated (`refreshPromise`); `toolRegistry` global counter | `tool_state_id` scoped per conversation; `toolRegistry` must be session‑scoped or replaced | `SUPPORTED` (V2 path) | Session‑scoped `ToolNameRegistry` + `SessionToolStateStore` delivered and used by the V2 pipeline (§22); legacy global maps untouched (V1 path only). |
-| Logs / observability | `log/warn/error` via `constants.ts` (debug‑gated) | Should add request‑ID, latency, etc. (see agents.md observability) | `UNSUPPORTED` | Enhance logging per agents.md. |
+| Logs / observability | `log/warn/error` via `constants.ts` (debug‑gated) | Should add request‑ID, latency, etc. (see agents.md observability) | `SUPPORTED` | One `[GigaCode] [OBS]` line per request (`src/core/observability.ts`, wired in `src/v2/plugin.ts`): request ID (RqUID), endpoint, model, latency, retry count, HTTP status, stream completion, tool name/call ID, normalized error category. Content (bodies/prompts/headers) is never emitted; every line is additionally passed through `redactSecrets` (§31). Default on, `GIGACHAT_OBSERVABILITY=false` disables. Unit-tested (`tests/unit/observability.test.ts`); see `docs/OBSERVABILITY.md`. |
 
 ## Mapping implementation status (PHASE 2/3, evidence-backed)
 
@@ -94,7 +94,7 @@ Verified against `https://api.giga.chat/v2/chat/completions` (OAuth scope `GIGAC
 
 ## Next Steps
 1. ✅ Live verification of the wired V2 path completed 2026-09-15/16 (chat, streaming, tools, state, tool ids, errors) — statuses above reflect it; probes preserved under `scripts/`.
-2. Remaining `UNSUPPORTED`/`MIGRATE`/`PARTIAL` rows need implementation (observability, 3D; vision HTTP-URL images; MCP; code_interpreter unavailable per live 422). Implement alongside fixtures in `tests/gigachat-v2/` showing:
+2. Remaining `UNSUPPORTED`/`MIGRATE`/`PARTIAL` rows need implementation (3D; vision HTTP-URL images; MCP; code_interpreter unavailable per live 422). Implement alongside fixtures in `tests/gigachat-v2/` showing:
    - Input (OpenAI request)
    - Expected V2 request (after mapping)
    - Fake V2 response

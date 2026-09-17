@@ -46,6 +46,17 @@ export interface V2PipelineOptions {
   onSseError?: (message: string) => void;
 }
 
+/** Stream lifecycle signal (plan §32 "stream completion"). */
+export interface StreamEndInfo {
+  /** `true` when the stream flushed; `false` when the consumer cancelled it. */
+  completed: boolean;
+}
+
+/** Per-call streaming hooks (do not leak into the shared pipeline instance). */
+export interface StreamHooks {
+  onEnd?: (info: StreamEndInfo) => void;
+}
+
 export interface V2Pipeline {
   store: SessionToolStateStore;
   /** OpenAI chat body → GigaChat V2 wire body (session state injected; async for file uploads). */
@@ -58,8 +69,13 @@ export interface V2Pipeline {
    * (mirrors the legacy `translateJsonResponse` surface).
    */
   jsonResponseFromUpstream(response: Response, sessionId: string): Promise<Response>;
-  /** V2 SSE Response → OpenAI SSE Response (session state captured at flush). */
-  streamingResponse(response: Response, sessionId: string): Response;
+  /**
+   * V2 SSE Response → OpenAI SSE Response (session state captured at flush).
+   * Optional per-call `hooks.onEnd` fires once when the translated stream
+   * completes (`completed: true`) or is cancelled by the consumer
+   * (`completed: false`) — plan §32 stream-completion observability.
+   */
+  streamingResponse(response: Response, sessionId: string, hooks?: StreamHooks): Response;
   /** OpenAI-style error envelope for non-2xx upstream responses. */
   errorEnvelope(
     status: number,
@@ -108,14 +124,20 @@ export function createV2Pipeline(options: V2PipelineOptions = {}): V2Pipeline {
       store.captureFromResponse(sessionId, restored);
       return normalizedToOpenCode(restored);
     },
-    streamingResponse(response, sessionId) {
+    streamingResponse(response, sessionId, hooks) {
+      const onEnd = onceEndHook(hooks?.onEnd);
       if (!response.body) {
+        onEnd({ completed: true });
         return new Response("", { status: response.status, headers: V2_SSE_HEADERS });
       }
-      const transform = createSseTransform(sessionId, store, onSseError, (name) =>
-        registryFor(sessionId).originalOf(name),
+      const transform = createSseTransform(
+        sessionId,
+        store,
+        onSseError,
+        (name) => registryFor(sessionId).originalOf(name),
+        onEnd,
       );
-      const stream = pipeWithCancel(response.body, transform);
+      const stream = pipeWithCancel(response.body, transform, onEnd);
       return new Response(stream, { status: response.status, headers: V2_SSE_HEADERS });
     },
     async jsonResponseFromUpstream(response, sessionId) {
@@ -160,6 +182,7 @@ function createSseTransform(
   store: SessionToolStateStore,
   onSseError: (message: string) => void,
   restoreName: (name: string) => string,
+  onEnd?: (info: StreamEndInfo) => void,
 ): TransformStream<Uint8Array, Uint8Array> {
   const parser = new SseParser();
   const machine = new StreamStateMachine();
@@ -215,6 +238,7 @@ function createSseTransform(
         store.capture(sessionId, machine.lastToolsStateId);
       }
       controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+      onEnd?.({ completed: true });
     },
   });
 }
@@ -234,6 +258,7 @@ function createSseTransform(
 function pipeWithCancel(
   source: ReadableStream<Uint8Array>,
   transform: TransformStream<Uint8Array, Uint8Array>,
+  onEnd?: (info: StreamEndInfo) => void,
 ): ReadableStream<Uint8Array> {
   const sourceReader = source.getReader();
   const writer = transform.writable.getWriter();
@@ -270,6 +295,26 @@ function pipeWithCancel(
       try {
         await sourceReader.cancel(reason);
       } catch {}
+      onEnd?.({ completed: false });
     },
   });
+}
+
+/**
+ * Wrap a stream-end hook so it fires at most once (flush and cancel are
+ * mutually exclusive in practice, but cancellation racing a flush must not
+ * double-report). A throwing hook is swallowed: diagnostics never break a
+ * stream.
+ */
+function onceEndHook(hook?: (info: StreamEndInfo) => void): (info: StreamEndInfo) => void {
+  let fired = false;
+  return (info) => {
+    if (fired) return;
+    fired = true;
+    try {
+      hook?.(info);
+    } catch {
+      // ignore hook failures
+    }
+  };
 }
