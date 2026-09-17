@@ -50,6 +50,7 @@ SCENARIO="all"
 USAGE_PROBE=0
 RUN_TIMEOUT="${PERF_RUN_TIMEOUT:-300}"
 declare -a MODES=()
+declare -a CAPPED_RUNS=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -190,8 +191,9 @@ fi
 
 run_one() {
   local mode="$1" scenario="$2" repeat="$3"
-  local prompt log probe_env=""
+  local prompt log probe_env="" run_id
   local -a timeout_cmd=()
+  run_id="${mode}-${scenario}-${repeat}"
   prompt="$(scenario_prompt "$scenario")"
   log="$PERF_ROOT/logs/${mode}-${scenario}-${repeat}.log"
   # Cap each run so a stuck agent/tool loop in one scenario cannot pin the whole
@@ -216,6 +218,7 @@ run_one() {
       PERF_LOG="$PERF_ROOT/logs/perf-$mode.jsonl" \
       PERF_MODE="$mode" \
       PERF_SCENARIO="$scenario" \
+      PERF_RUN_ID="$run_id" \
       ${probe_env:+$probe_env} \
       ${GIGACHAT_CREDENTIALS_VALUE:+GIGACHAT_CREDENTIALS="$GIGACHAT_CREDENTIALS_VALUE"} \
       ${GPT2GIGA_API_KEY:+GPT2GIGA_API_KEY="$GPT2GIGA_API_KEY"} \
@@ -225,6 +228,9 @@ run_one() {
       opencode run --standalone --auto --print-logs --model "$MODEL" --agent build "$prompt" ) >"$log" 2>&1
   local rc=$?
   set -e
+  if [[ $rc -eq 124 ]]; then
+    CAPPED_RUNS+=("$run_id")
+  fi
   echo "   exit=$rc (log: $log)"
 }
 
@@ -248,6 +254,13 @@ done
 
 # --- 6. Analysis ------------------------------------------------------------
 echo ""
+# Records from runs that hit the wall-clock cap are dropped: their repeated
+# responses are an agent/tool loop, not a measurement of the scenario.
+if [[ ${#CAPPED_RUNS[@]} -gt 0 ]]; then
+  PERF_EXCLUDE_RUNS="$(IFS=,; echo "${CAPPED_RUNS[*]}")"
+  export PERF_EXCLUDE_RUNS
+  echo ">> capped runs excluded from aggregates: $PERF_EXCLUDE_RUNS"
+fi
 python3 "$REPO_ROOT/scripts/bench/lib/analyze-perf.py" \
   $(for m in "${MODES[@]}"; do echo "$PERF_ROOT/logs/perf-$m.jsonl"; done) \
   || { echo ">> analysis failed (see logs under $PERF_ROOT/logs)"; exit 1; }

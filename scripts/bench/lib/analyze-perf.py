@@ -117,6 +117,25 @@ def main() -> int:
         print("ERROR: no records found", file=sys.stderr)
         return 1
 
+    # Drop records from harness runs cut off by the wall-clock cap: their
+    # repeated responses are an agent/tool loop, not a scenario measurement.
+    excluded_runs = {
+        run for run in os.environ.get("PERF_EXCLUDE_RUNS", "").split(",") if run
+    }
+    if excluded_runs:
+        dropped = sum(1 for r in records if str(r.get("run_id")) in excluded_runs)
+        records = [
+            r for r in records if str(r.get("run_id")) not in excluded_runs
+        ]
+        print(
+            f">> excluded {dropped} record(s) from capped run(s): "
+            f"{', '.join(sorted(excluded_runs))}",
+            file=sys.stderr,
+        )
+    if not records:
+        print("ERROR: no records left after exclusions", file=sys.stderr)
+        return 1
+
     groups: dict[tuple[str, str], list[dict]] = {}
     for record in records:
         key = (str(record.get("mode", "?")), str(record.get("scenario", "?")))

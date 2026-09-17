@@ -4,8 +4,11 @@
 // http hooks observe the final outbound request/response. Writes one JSON line
 // per outbound GigaChat request to $PERF_LOG:
 //
-//   {mode,url,model,status,sse,t_request,ttft_ms,total_ms,out_bytes,
-//    out_tokens,usage,usage_source,estimate_tokens,probe_usage,tokens_per_sec}
+//   {mode,scenario,run_id,url,model,status,sse,t_request,ttft_ms,total_ms,
+//    out_bytes,out_tokens,usage,usage_source,estimate_tokens,probe_usage,
+//    tokens_per_sec}
+// `run_id` (PERF_RUN_ID, mode-scenario-repeat) lets the analyzer drop records
+// from a run that hit the harness wall-clock cap.
 //
 // Timings are relative to the request hook firing; TTFT is the arrival time of
 // the first streamed byte (equal to total for non-streaming responses).
@@ -42,6 +45,9 @@ import { gunzipSync } from "node:zlib";
 const LOG = process.env.PERF_LOG ?? "/tmp/opencode/perf.jsonl";
 const MODE = process.env.PERF_MODE ?? "unknown";
 const SCENARIO = process.env.PERF_SCENARIO ?? "unknown";
+// Identifies one harness run (mode-scenario-repeat) so the analyzer can drop
+// records from runs that hit the wall-clock cap (an agent/tool loop).
+const RUN_ID = process.env.PERF_RUN_ID ?? null;
 // Extra substring to capture requests that do not target GigaChat directly,
 // e.g. a local gpt2giga proxy (http://127.0.0.1:8091/v2). Set by the harness
 // for `--mode gpt2giga`; empty for v1/v2 (the /giga|sberbank/ match applies).
@@ -364,6 +370,7 @@ const plugin = {
         const record = {
           mode: MODE,
           scenario: SCENARIO,
+          run_id: RUN_ID,
           url,
           model: start.model,
           status: resp.status,
