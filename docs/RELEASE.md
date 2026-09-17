@@ -52,8 +52,12 @@ npm test            # 314 pass / 0 fail / 1513 expect (39 files)
 реализованы как живые harness'ы, работающие в изолированной XDG-среде:
 
 ```bash
-# OpenCode E2E: 6 сценариев (chat, fix+test, add tests, run, parallel tools, MCP)
-scripts/smoke/run-smoke.sh --keep
+# OpenCode E2E: 6 сценариев (chat, fix+test, add tests, run, parallel tools, MCP).
+# SMOKE_ATTEMPTS (default 3) — retries на уровне сценария/цепочки; каждый
+# attempt стартует от pristine fixture, логи сохраняются как
+# logs/<scenario>.attemptN.log, V2-evidence берётся только из запросов
+# текущего attempt. SMOKE_ATTEMPTS=1 отключает retries.
+SMOKE_ATTEMPTS=3 scripts/smoke/run-smoke.sh --keep
 
 # Long session: 20-30+ tool interactions
 scripts/smoke/run-long-session.sh --keep
@@ -66,6 +70,24 @@ scripts/bench/run-live-perf.sh --mode v2 --mode v1 --repeat 3
 [`LONG_SESSION.md`](LONG_SESSION.md) и [`PERFORMANCE.md`](PERFORMANCE.md).
 Offline-эквивалент длинной сессии (детерминированный, CI) —
 `tests/unit/long-session.test.ts` (24 тура) — зелёный.
+
+### Live smoke: flakiness модели vs отказ коннектора
+
+Прогон `run-smoke.sh --keep` от 2026-09-17 завершился `SMOKE RESULT: FAILED`,
+но причина — нестабильность LLM, а не коннектор:
+
+- все 12 запусков сценариев ушли на `api.giga.chat/v2/chat/completions`
+  (`V2-pipeline: CONFIRMED` в каждом);
+- на первой попытке 02 дал ненулевой exit при выполненных ассертах, а 04 не
+  дозеленил тесты, добавленные 03; на второй попытке 06 (MCP `fs`, 14 tools)
+  модель отказалась вызывать инструмент, заявив «MCP isn't accessible»;
+- «ошибочные» строки `[GigaCode] [OBS]` (`502`/`422`, `/v1/... status=200`) в
+  логе сценария 02 — это вывод **собственного unit-набора коннектора**
+  (модель запустила `bun test` в корне репо), а не живой трафик.
+
+Harness теперь ретраит сценарии по отдельности (и цепочку 02→03→04 целиком),
+поэтому такой прогон оценивается как PASS, а отказ коннектора (запрос не ушёл
+на V2-эндпоинт или ассерт не выполнился на всех попытках) — как FAILED.
 
 ## Security (§36)
 
