@@ -16,12 +16,47 @@ import { performance } from "node:perf_hooks";
 const LOG = process.env.PERF_LOG ?? "/tmp/opencode/perf.jsonl";
 const MODE = process.env.PERF_MODE ?? "unknown";
 const SCENARIO = process.env.PERF_SCENARIO ?? "unknown";
+// Extra substring to capture requests that do not target GigaChat directly,
+// e.g. a local gpt2giga proxy (http://127.0.0.1:8091/v2). Set by the harness
+// for `--mode gpt2giga`; empty for v1/v2 (the /giga|sberbank/ match applies).
+const MATCH = process.env.PERF_MATCH ?? "";
 
-/** rquid -> { t, model } for requests awaiting a response. */
-const started = new Map();
+/**
+ * Correlate requests with responses.
+ *
+ * The connector adds an `RqUID` request header, so that is the primary key.
+ * When the perf plugin runs standalone (e.g. against a local gpt2giga proxy)
+ * there is no RqUID, so fall back to a FIFO queue keyed by method+url. Under
+ * concurrency (identical parallel requests) responses may be matched in a
+ * different order, which only affects attribution between near-identical
+ * records.
+ */
+const pending = new Map();
+
+function corrKey(req, url) {
+  const rquid = req?.headers?.get?.("RqUID");
+  if (rquid) return `rquid:${rquid}`;
+  return `url:${req?.method ?? "POST"} ${url}`;
+}
+
+function pendingPush(key, value) {
+  const arr = pending.get(key);
+  if (arr) arr.push(value);
+  else pending.set(key, [value]);
+}
+
+function pendingShift(key) {
+  const arr = pending.get(key);
+  if (!arr || arr.length === 0) return undefined;
+  const value = arr.shift();
+  if (arr.length === 0) pending.delete(key);
+  return value;
+}
 
 function looksLikeGiga(url) {
-  return typeof url === "string" && /giga|sberbank/i.test(url);
+  if (typeof url !== "string") return false;
+  if (/giga|sberbank/i.test(url)) return true;
+  return MATCH.length > 0 && url.includes(MATCH);
 }
 
 function extractUsage(text) {
@@ -71,8 +106,8 @@ const plugin = {
         } catch {
           model = "?";
         }
-        const rquid = req?.headers?.get("RqUID") ?? `${started.size}-${Math.random()}`;
-        started.set(rquid, { t: performance.now(), model, url });
+        const key = corrKey(req, url);
+        pendingPush(key, { t: performance.now(), model, url });
       } catch {
         // ignore
       }
@@ -85,10 +120,9 @@ const plugin = {
         if (!resp) return;
         const url = req?.url ?? "?";
         if (!looksLikeGiga(url)) return;
-        const rquid = req?.headers?.get("RqUID") ?? "";
-        const start = started.get(rquid);
+        const key = corrKey(req, url);
+        const start = pendingShift(key);
         if (!start) return;
-        started.delete(rquid);
 
         const tHeaders = performance.now();
         const ctype = resp.headers?.get?.("Content-Type") ?? "";

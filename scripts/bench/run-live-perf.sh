@@ -195,6 +195,7 @@ run_one() {
       PERF_SCENARIO="$scenario" \
       ${GIGACHAT_CREDENTIALS_VALUE:+GIGACHAT_CREDENTIALS="$GIGACHAT_CREDENTIALS_VALUE"} \
       ${GPT2GIGA_API_KEY:+GPT2GIGA_API_KEY="$GPT2GIGA_API_KEY"} \
+      ${PERF_MATCH:+PERF_MATCH="$PERF_MATCH"} \
       npm_config_cache="$PERF_ROOT/npm-cache" \
       opencode run --standalone --auto --print-logs --model "$MODEL" --agent build "$prompt" ) >"$log" 2>&1
   local rc=$?
@@ -204,6 +205,14 @@ run_one() {
 
 for mode in "${MODES[@]}"; do
   write_config "$mode"
+  if [[ "$mode" == "gpt2giga" && -n "$GPT2GIGA_URL" ]]; then
+    # The proxy URL has no "giga"/"sberbank" in it, so tell the capture plugin
+    # which host to match (host[:port] of --gpt2giga-url).
+    PERF_MATCH="${GPT2GIGA_URL#*://}"
+    PERF_MATCH="${PERF_MATCH%%/*}"
+  else
+    PERF_MATCH=""
+  fi
   : > "$PERF_ROOT/logs/perf-$mode.jsonl"
   for scenario in "${SCENARIOS[@]}"; do
     for ((r = 1; r <= REPEAT; r++)); do
