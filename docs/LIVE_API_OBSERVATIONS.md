@@ -282,3 +282,26 @@ Live-паттерн: `^[A-Za-z][A-Za-z0-9_.-]*$` (**допускает `-` и `.
 | стрим после тул-раунда | редкий апстрим-сталл ~2 мин на продолжении после tool-result (200, обрезанный ответ) — апстрим-лаг, плагин не причастен | флак, покрыт авто-ретраем сета |
 
 Итог: PHASE 10 §26 закрыт — 6/6 сценариев `exit=0`, все ассерты зелёные, маршрут `/v2/chat/completions` подтверждён в каждом прогоне.
+
+## 13. Long-session live E2E — §27 (2026-09-17, `scripts/smoke/run-long-session.sh`)
+
+Одна OpenCode-сессия (`ses_f51d1fbf3ffeNs2UibjUKCLstx`), 10 последовательных
+`opencode run --session <id>` шагов (inspect → read → write tests → run →
+inspect failure → fix factorial → fix isEven → review diff → parallel tools →
+final review) против live API через свежий `dist/index.js` (`v2:true`,
+scratch XDG-изоляция). Все шаги `exit=0`; фикстура зелёная.
+
+| Факт | Наблюдение | Статус |
+|---|---|---|
+| V2-маршрут на всей длинной сессии | 33/33 REQ → `/v2/chat/completions`, 33/33 RESP 200 | подтверждено |
+| tool IDs | 22 tool-части, `call_1..call_N` последовательны, 0 malformed | подтверждено |
+| tool state round-trip | 22 запроса несли `functions_state_id` | подтверждено |
+| streaming | 32/32 assistant-сообщений streamed, 33 SSE-ответа | подтверждено |
+| context growth | wire 2555 → 207923 bytes | подтверждено |
+| параллельные `tool_call` | в этой сессии модель выпускала по 1 тулу за шаг (soft WARN) | модель-зависимо; §12 сценарий 05 даёт 3 параллельных |
+| `reasoning_content` | 0/33 (soft WARN): `GigaChat-2-Max` не отдавал | модель-зависимо (выбор reasoning-модели) |
+| `usage` в SSE | 0/33 (soft WARN): тела 562–762 байт без `usage`; счётчики сессии `in=0 out=0` | апстрим-зависимо; маппинг покрыт offline-туром |
+| cancellation (best-effort) | SIGINT длинной генерации: probe rc=0, recovery rc=0 | не фатально |
+
+Итог: PHASE 12 §27 закрыт — hard FAIL 0, soft WARN 3, 22 tool interactions,
+все hard-проверки зелёные.

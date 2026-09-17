@@ -131,22 +131,39 @@ scripts/smoke/run-long-session.sh --analyze-only   # только анализ (
 
 ## Результат live-прогона
 
-Заполняется после прогона в терминале пользователя (там, где доступен live
-API). Формат:
+Прогон: 2026-09-17, `scripts/smoke/run-long-session.sh --keep`,
+модель `gigachat/GigaChat-2-Max`.
 
 ```text
-Дата:            YYYY-MM-DD
-Модель:          gigachat/GigaChat-2-Max
-Туры / tool calls: <N> / <M>
-Параллельные тулы: max <k> в одном шаге
-Streaming:       <streamed>/<assistant msgs>, SSE resp <s>
-State round-trip: <n> запросов с functions_state_id
-Reasoning/usage: <r>/<u> ответов
-Cancellation:    probe rc=<..>, recovery rc=<..>
-Fixture tests:   PASS/FAIL
-Анализатор:      hard FAIL <h>, soft WARN <w>
-Итог:            PASS
+Сессия:            ses_f51d1fbf3ffeNs2UibjUKCLstx (одна сессия, 10 шагов)
+Туры / tool calls: 10 / 22
+Параллельные тулы: max 1 в одном шаге (WARN)
+Streaming:         32/32 assistant msgs streamed, 33 SSE resp
+State round-trip:  22 запроса несли functions_state_id
+Context:           first=2555 → max=207923 bytes
+V2 route:          33/33 → /v2/chat/completions
+Статусы:           33/33 200
+Reasoning/usage:   0/33 / 0/33 (WARN)
+Cancellation:      probe rc=0, recovery rc=0
+Fixture tests:     PASS
+Анализатор:        hard FAIL 0, soft WARN 3
+Итог:              PASS
 ```
+
+Шаги: `inspect-repo → read-modules → write-tests → run-tests →
+inspect-failure → fix-factorial → fix-iseven → review-diff → parallel-tools →
+final-review` — все `exit=0`.
+
+### Разбор soft WARN
+
+| WARN | Наблюдение | Причина и где покрыто |
+|---|---|---|
+| concurrency | в этой сессии max 1 tool-call на шаг | модель не выпустила параллельные тулы; §26 smoke сценарий 05 даёт 3 параллельных `tool_call` (200), offline `long-session.test.ts` — 2 в одном сообщении |
+| reasoning | 0/33 ответов с `reasoning_content` | `GigaChat-2-Max` его не отдавал; `capabilities.reasoning` включается выбором reasoning-модели. Offline-тур проверяет проброс `reasoning_content` из SSE |
+| usage | 0/33 ответов с `usage` | live-апстрим не прислал `usage` ни в одном SSE-кадре (capture читал тела 562–762 байт, совпадений нет), поэтому и счётчики сессии `in=0 out=0`. Offline-тур проверяет монотонный рост usage |
+
+Все три — `soft` по замыслу (§27): модель/апстрим может законно не отдать
+конкретное поле в конкретном прогоне; `--strict` переводит их в жёсткие.
 
 См. также `docs/LIVE_API_OBSERVATIONS.md` §12 (§26 smoke) — long-session
 дополняет его, не заменяя.

@@ -166,8 +166,9 @@ Harness теперь ретраит сценарии по отдельности
 2. **Live-прогоны**:
    - OpenCode E2E (`run-smoke.sh`) — ✅ **PASS** (2026-09-17, attempt 1, все 6
      сценариев; см. выше);
-   - `run-long-session.sh` — вписать результат в
-     [`LONG_SESSION.md`](LONG_SESSION.md);
+   - long-session (`run-long-session.sh`) — ✅ **PASS** (2026-09-17, 10 шагов /
+     22 tool interactions, hard FAIL 0, soft WARN 3; см.
+     [`LONG_SESSION.md`](LONG_SESSION.md));
    - `run-live-perf.sh --mode v2 --mode v1 --mode gpt2giga` — вписать в
      [`PERFORMANCE.md`](PERFORMANCE.md).
 3. **Ротация секретов** (closeout): перевыпустить base64-`credentials` и
