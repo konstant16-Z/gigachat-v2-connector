@@ -41,6 +41,12 @@ export async function uploadBase64DataUrl(
   if (!mimeType || !dataString) {
     throw new Error("Invalid base64 data URL parts");
   }
+  // Reject malformed base64 payloads locally (plan §30 — no network call for
+  // garbage): strict alphabet with optional end padding; a residue of one
+  // byte can never be a valid encoding.
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(dataString) || dataString.length % 4 === 1) {
+    throw new Error("Invalid base64 data URL payload");
+  }
 
   const buffer = Buffer.from(dataString, "base64");
   let ext = "png";
