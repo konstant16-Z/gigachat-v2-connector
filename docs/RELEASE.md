@@ -169,7 +169,8 @@ Harness теперь ретраит сценарии по отдельности
    и обновлённые release-доки (§26/§27/§33).
 2. **Live-прогоны**:
    - OpenCode E2E (`run-smoke.sh`) — ✅ **PASS** (2026-09-17, attempt 1, все 6
-     сценариев; см. выше);
+     сценариев; повторный прогон **после** V2 trailing usage-чанка — тоже PASS
+     с attempt 1, 33 V2-запроса; см. выше);
    - long-session (`run-long-session.sh`) — ✅ **PASS** (2026-09-17, 10 шагов /
      22 tool interactions, hard FAIL 0, soft WARN 3; см.
      [`LONG_SESSION.md`](LONG_SESSION.md));

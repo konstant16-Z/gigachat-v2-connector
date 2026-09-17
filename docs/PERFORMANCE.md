@@ -160,6 +160,13 @@ result tables below come from runs **after** this change, so v2 `out tok`/`tok/s
 are usage-derived (`usage_source="upstream"`); v1 stays on the harness estimate
 (or the optional `probe`).
 
+The OpenCode client accepts the chunk: the E2E smoke re-run after this change
+passed every scenario on attempt 1 (2026-09-17, 33 V2 requests). In the captured
+records the `usage` payload is the OpenAI shape (`completion_tokens`/
+`prompt_tokens`) emitted by `src/streaming/opencode.ts`, not the upstream V2
+`input_tokens`/`output_tokens`, i.e. the harness observed the connector surface
+itself.
+
 **Harness token accounting (2026-09-17).** The capture plugin now has two
 independent improvements (both benchmark-side; V1/connector behaviour is not
 changed):
