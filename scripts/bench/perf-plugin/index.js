@@ -5,13 +5,36 @@
 // per outbound GigaChat request to $PERF_LOG:
 //
 //   {mode,url,model,status,sse,t_request,ttft_ms,total_ms,out_bytes,
-//    out_tokens,usage,tokens_per_sec}
+//    out_tokens,usage,usage_source,estimate_tokens,probe_usage,tokens_per_sec}
 //
 // Timings are relative to the request hook firing; TTFT is the arrival time of
 // the first streamed byte (equal to total for non-streaming responses).
 // No request/response content is written — only counts and timings.
-import { appendFileSync } from "node:fs";
+//
+// Token accounting:
+//   usage_source="upstream"  the surface carried a real `usage` object.
+//   usage_source="probe"     the optional non-streaming probe returned usage
+//                            (see PERF_USAGE_PROBE below).
+//   usage_source="estimate"  fallback: generated content only (delta.content /
+//                            reasoning_content / tool-call name+arguments),
+//                            rounded chars/4. The SSE protocol frames are NOT
+//                            counted, unlike the earlier whole-body length/4.
+//   `estimate_tokens` is always recorded for transparency, even when a real
+//   usage value is used.
+//
+// PERF_USAGE_PROBE=1 (Option 1): for each streaming chat request, replay the
+// already-translated GigaChat request with `stream: false` over a raw
+// node:http(s) connection so the raw upstream `usage` can be read. The replay
+// bypasses the session fetch hooks (no double translation, no extra capture
+// record) and runs concurrently with the stream, so this roughly doubles
+// upstream requests and is intended for a dedicated reference run, not for the
+// latency numbers. Credentials are only replayed in memory and never logged.
+import { randomUUID } from "node:crypto";
+import { appendFileSync, readFileSync } from "node:fs";
+import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
 import { performance } from "node:perf_hooks";
+import { gunzipSync } from "node:zlib";
 
 const LOG = process.env.PERF_LOG ?? "/tmp/opencode/perf.jsonl";
 const MODE = process.env.PERF_MODE ?? "unknown";
@@ -20,6 +43,26 @@ const SCENARIO = process.env.PERF_SCENARIO ?? "unknown";
 // e.g. a local gpt2giga proxy (http://127.0.0.1:8091/v2). Set by the harness
 // for `--mode gpt2giga`; empty for v1/v2 (the /giga|sberbank/ match applies).
 const MATCH = process.env.PERF_MATCH ?? "";
+// Option 1: opt-in non-streaming usage probe (see the header comment).
+const USAGE_PROBE = process.env.PERF_USAGE_PROBE === "1";
+const CA_PEM = process.env.PERF_CA_PEM ?? process.env.NODE_EXTRA_CA_CERTS ?? "";
+const PROBE_TIMEOUT_MS = Number(process.env.PERF_PROBE_TIMEOUT_MS ?? "120000");
+
+let cachedCa;
+/** Read the optional probe CA bundle once; `null` means "use system trust". */
+function loadCaBundle() {
+  if (cachedCa !== undefined) return cachedCa;
+  if (!CA_PEM) {
+    cachedCa = null;
+    return cachedCa;
+  }
+  try {
+    cachedCa = readFileSync(CA_PEM);
+  } catch {
+    cachedCa = null;
+  }
+  return cachedCa;
+}
 
 /**
  * Correlate requests with responses.
@@ -53,6 +96,15 @@ function pendingShift(key) {
   return value;
 }
 
+/** Probe replays must never be captured (defensive; raw http bypasses hooks). */
+function isProbeRequest(req) {
+  try {
+    return req?.headers?.get?.("X-Perf-Probe") === "1";
+  } catch {
+    return false;
+  }
+}
+
 function looksLikeGiga(url) {
   if (typeof url !== "string") return false;
   if (/giga|sberbank/i.test(url)) return true;
@@ -72,9 +124,147 @@ function extractUsage(text) {
   return { prompt, completion: completion ?? output, output, total };
 }
 
+/** Concatenate only model-generated text from a `tool_calls` array. */
+function toolCallText(toolCalls) {
+  if (!Array.isArray(toolCalls)) return "";
+  let out = "";
+  for (const call of toolCalls) {
+    const fn = call?.function;
+    if (typeof fn?.name === "string") out += fn.name;
+    if (typeof fn?.arguments === "string") out += fn.arguments;
+  }
+  return out;
+}
+
+/**
+ * Concatenate generated text from SSE `data:` frames only. Returns `null` when
+ * the body is not SSE (no `data:` frame parsed), so non-streaming JSON falls
+ * through to the JSON path in estimateTokens().
+ */
+function generatedTextFromSse(text) {
+  let out = "";
+  let sawFrame = false;
+  for (const rawLine of text.split("\n")) {
+    const line = rawLine.trim();
+    if (!line.startsWith("data:")) continue;
+    const payload = line.slice(5).trim();
+    if (!payload || payload === "[DONE]") continue;
+    let obj;
+    try {
+      obj = JSON.parse(payload);
+    } catch {
+      continue;
+    }
+    sawFrame = true;
+    const choices = Array.isArray(obj?.choices) ? obj.choices : [];
+    for (const choice of choices) {
+      const delta = choice?.delta ?? choice?.message ?? {};
+      if (typeof delta.content === "string") out += delta.content;
+      if (typeof delta.reasoning_content === "string") out += delta.reasoning_content;
+      out += toolCallText(delta.tool_calls);
+    }
+  }
+  return sawFrame ? out : null;
+}
+
+/**
+ * Rough fallback when the upstream does not surface usage: chars/4 over the
+ * generated text only. Falls back to the raw body only if nothing parses
+ * (e.g. an error body), so a plain byte count never masquerades as tokens.
+ */
 function estimateTokens(text) {
-  // Rough fallback when the upstream does not surface usage (bytes/4).
-  return Math.max(0, Math.round(text.length / 4));
+  const streamed = generatedTextFromSse(text);
+  if (streamed !== null) return Math.max(0, Math.round(streamed.length / 4));
+  try {
+    const obj = JSON.parse(text);
+    const choices = Array.isArray(obj?.choices) ? obj.choices : [];
+    let out = "";
+    for (const choice of choices) {
+      const message = choice?.message ?? choice?.delta ?? {};
+      if (typeof message.content === "string") out += message.content;
+      if (typeof message.reasoning_content === "string") out += message.reasoning_content;
+      out += toolCallText(message.tool_calls);
+    }
+    return Math.max(0, Math.round(out.length / 4));
+  } catch {
+    return Math.max(0, Math.round(text.length / 4));
+  }
+}
+
+/**
+ * Option 1: replay an already-translated GigaChat chat request with
+ * `stream: false` over a raw node:http(s) connection and read the raw upstream
+ * usage. Resolves to `{status, usage}` or `null`; never throws, never logs
+ * request or response content.
+ */
+function probeUsage(url, headers, body, timeoutMs) {
+  return new Promise((resolve) => {
+    let parsed;
+    try {
+      parsed = new URL(url);
+    } catch {
+      resolve(null);
+      return;
+    }
+    const secure = parsed.protocol === "https:";
+    const send = secure ? httpsRequest : httpRequest;
+    const out = {};
+    try {
+      for (const [name, value] of headers.entries()) {
+        const lower = name.toLowerCase();
+        if (lower === "content-length" || lower === "host" || lower === "accept-encoding") continue;
+        out[name] = value;
+      }
+    } catch {
+      // ignore header iteration failures; the probe is best-effort
+    }
+    out["Content-Type"] = "application/json";
+    out.Accept = "application/json";
+    out["Accept-Encoding"] = "identity";
+    out.RqUID = randomUUID();
+    out["X-Perf-Probe"] = "1";
+    out["Content-Length"] = Buffer.byteLength(body);
+    const options = {
+      method: "POST",
+      hostname: parsed.hostname,
+      port: parsed.port || (secure ? 443 : 80),
+      path: `${parsed.pathname}${parsed.search}`,
+      headers: out,
+    };
+    if (secure) {
+      const ca = loadCaBundle();
+      if (ca) options.ca = ca;
+    }
+    let settled = false;
+    const settle = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+    const req = send(options, (res) => {
+      const chunks = [];
+      res.on("data", (chunk) => chunks.push(chunk));
+      res.on("error", () => settle(null));
+      res.on("end", () => {
+        let buf = Buffer.concat(chunks);
+        const encoding = String(res.headers?.["content-encoding"] ?? "");
+        if (encoding.includes("gzip")) {
+          try {
+            buf = gunzipSync(buf);
+          } catch {
+            // leave the raw bytes; extractUsage will simply find nothing
+          }
+        }
+        settle({ status: res.statusCode ?? 0, usage: extractUsage(buf.toString("utf8")) });
+      });
+    });
+    req.on("error", () => settle(null));
+    req.setTimeout(timeoutMs, () => {
+      req.destroy();
+      settle(null);
+    });
+    req.end(body);
+  });
 }
 
 function write(record) {
@@ -93,21 +283,31 @@ const plugin = {
       try {
         const req = event?.request;
         const url = req?.url ?? "?";
-        if (!looksLikeGiga(url)) return;
+        if (!looksLikeGiga(url) || isProbeRequest(req)) return;
         let body = "";
         try {
           body = await req.clone().text();
         } catch {
           body = "";
         }
-        let model = "?";
+        let bodyJson = null;
         try {
-          model = JSON.parse(body)?.model ?? "?";
+          bodyJson = JSON.parse(body);
         } catch {
-          model = "?";
+          bodyJson = null;
         }
+        const model = typeof bodyJson?.model === "string" && bodyJson.model ? bodyJson.model : "?";
         const key = corrKey(req, url);
-        pendingPush(key, { t: performance.now(), model, url });
+        const entry = { t: performance.now(), model, url, probe: null };
+        if (USAGE_PROBE && url.includes("/chat/completions") && bodyJson && bodyJson.stream !== false) {
+          try {
+            const probeBody = JSON.stringify({ ...bodyJson, stream: false });
+            entry.probe = probeUsage(url, req.headers, probeBody, PROBE_TIMEOUT_MS);
+          } catch {
+            entry.probe = null;
+          }
+        }
+        pendingPush(key, entry);
       } catch {
         // ignore
       }
@@ -119,7 +319,7 @@ const plugin = {
         const resp = event?.response;
         if (!resp) return;
         const url = req?.url ?? "?";
-        if (!looksLikeGiga(url)) return;
+        if (!looksLikeGiga(url) || isProbeRequest(req)) return;
         const key = corrKey(req, url);
         const start = pendingShift(key);
         if (!start) return;
@@ -140,6 +340,9 @@ const plugin = {
           out_bytes: 0,
           out_tokens: null,
           usage: null,
+          usage_source: "estimate",
+          estimate_tokens: null,
+          probe_usage: null,
           tokens_per_sec: null,
         };
 
@@ -174,13 +377,35 @@ const plugin = {
             // ignore read errors; report what we have
           }
           const tLast = performance.now();
-          const usage = extractUsage(text);
-          const tokens = usage?.completion ?? estimateTokens(text);
+          const upstreamUsage = extractUsage(text);
+          const estimate = estimateTokens(text);
+          let usage = upstreamUsage;
+          let source = upstreamUsage ? "upstream" : "estimate";
+          let probeUsageValue = null;
+          // Only await the probe when the surface had no usage of its own
+          // (V1); V2/gpt2giga already carry it, so no extra wait there.
+          if (!upstreamUsage && start.probe) {
+            const probed = await start.probe;
+            probeUsageValue = probed?.usage ?? null;
+            if (
+              probed &&
+              probed.status >= 200 &&
+              probed.status < 300 &&
+              typeof probed.usage?.completion === "number"
+            ) {
+              usage = probed.usage;
+              source = "probe";
+            }
+          }
+          const tokens = usage?.completion ?? estimate;
           record.ttft_ms = (firstAt ?? tLast) - start.t;
           record.total_ms = tLast - start.t;
           record.out_bytes = bytes;
           record.out_tokens = tokens;
           record.usage = usage;
+          record.usage_source = source;
+          record.estimate_tokens = estimate;
+          record.probe_usage = probeUsageValue;
           record.tokens_per_sec =
             record.total_ms > 0 ? (tokens / record.total_ms) * 1000 : null;
           write(record);

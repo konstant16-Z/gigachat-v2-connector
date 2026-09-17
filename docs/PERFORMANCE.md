@@ -124,12 +124,16 @@ Scenarios (read-only fixture, so repeats are stable): `simple`, `large`
   including the wait before the first chunk. With a response body, non-streaming
   responses use the same reader; TTFT and total are not necessarily equal.
 - `tokens_per_sec` = `out_tokens / total_ms × 1000`, not generation-only speed.
-  Where `usage` is absent, the implementation uses `round(text.length / 4)` on
-  the **entire decoded SSE text**, including protocol fields. This is neither
-  a byte count nor a reliable completion-token estimate; do not compare it with
-  usage-derived token throughput. Since the V2 usage-chunk change (below), V2
-  streaming surfaces `usage` when the upstream sends it, so the fallback mainly
-  affects V1 (and V2 streams whose upstream omitted `usage`).
+  `out_tokens` precedence: a real `usage` on the translated surface
+  (`usage_source="upstream"`), then the optional non-streaming probe
+  (`"probe"`, see the harness note below), then an estimate (`"estimate"`)
+  computed as `round(chars / 4)` over **generated text only**
+  (`delta.content`, `reasoning_content`, tool-call name+arguments), excluding
+  SSE protocol frames; `estimate_tokens` is always recorded for transparency.
+  Even the estimate is not a tokenizer — prefer `upstream`/`probe` when
+  comparing modes. The 2026-09-17 combined-run numbers below predate this
+  estimate change and the probe, so their `out tok`/`tok/s` still use the older
+  whole-body `text.length / 4`.
 - Percentiles select sorted element `round(p × (n−1))` (Python rounding), with
   no interpolation. For even sample sizes, reported p50 can differ from the
   conventional median (average of the two middle values).
@@ -155,6 +159,22 @@ shape) when the upstream `response.message.done` carries `usage` — see
 combined-run numbers below were captured **before** this change, so their v2
 `out tok`/`tok/s` are still `text.length/4` fallbacks; a re-run with the current
 connector is needed to make v2 usage-derived.
+
+**Harness token accounting (2026-09-17).** The capture plugin now has two
+independent improvements (both benchmark-side; V1/connector behaviour is not
+changed):
+
+1. The fallback estimate counts generated text only, not the SSE protocol.
+2. `scripts/bench/run-live-perf.sh --usage-probe` replays each streamed v1/v2
+   chat request non-streaming over a raw `node:http(s)` connection (bypassing
+   the session/connector hooks, so no double translation) and reads the raw
+   upstream `usage` (`usage_source="probe"`). The replay runs concurrently with
+   the stream and roughly doubles upstream requests — use it for a dedicated
+   usage/`tok/s` reference run, **not** for the latency numbers.
+
+Records carry `usage_source` (`upstream` | `probe` | `estimate`) and
+`estimate_tokens`; the analyzer prints the per-group source breakdown. The
+numbers below predate both changes.
 
 ### Result live-прогона — 2026-09-17 (combined v1/v2/gpt2giga)
 
@@ -209,7 +229,9 @@ scripts/bench/run-live-perf.sh --mode v1 --mode v2 --mode gpt2giga \
   в 33/47 записей → реальные `completion_tokens`. Значения 139 vs 9 отражают
   разные методы, а не разную длину ответов. Прогон снят **до** того, как V2
   начал отдавать trailing usage-чанк (см. вставку выше), поэтому v2-числа здесь
-  ещё fallback; для usage-derived `tok/s` нужен повторный прогон.
+  ещё fallback; для usage-derived `tok/s` нужен повторный прогон. Harness с тех
+  пор считает fallback по сгенерированному тексту и умеет `--usage-probe`
+  (реальный `usage` для v1/v2) — см. «Harness token accounting» выше.
 - **Без run-level сбоев:** 45/45 `exit=0`, в отличие от предыдущей отдельной
   сессии, где `v1/large #2` упал на OAuth `fetchToken` timeout.
 - **Peak RSS не снимался** (см. ограничения выше); метод — `/usr/bin/time -v`
@@ -249,6 +271,8 @@ Part B; ниже сведены TTFT p50 по сценариям.
 - **`tok/s` / `out tok` не сравнимы в этом прогоне:** у v1/v2 `usage`
   отсутствовал (fallback по всему SSE), у gpt2giga `usage` был в большинстве
   записей; прогон снят до правки V2 usage-чанка, см. ограничения в Part B.
+  Harness теперь умеет считать fallback по контенту и `--usage-probe` для
+  реального `usage` v1/v2 (см. «Harness token accounting»).
 - **gpt2giga — валидная benchmark-цель.** Все перехваченные ответы `200`,
   9–11 запросов на сценарий; код gpt2giga не копировался
   (см. [`THIRD-PARTY-NOTICES.md`](../THIRD-PARTY-NOTICES.md)).

@@ -3,8 +3,9 @@
 
 Reads one or more JSONL files produced by scripts/bench/perf-plugin
 (`{mode,scenario,status,sse,ttft_ms,total_ms,out_bytes,out_tokens,usage,
-tokens_per_sec,...}`), groups by (mode, scenario) and reports latency/tokens
-percentiles. Writes logs/perf-analysis.json.
+usage_source,estimate_tokens,probe_usage,tokens_per_sec,...}`), groups by
+(mode, scenario) and reports latency/tokens percentiles and the usage-source
+breakdown. Writes logs/perf-analysis.json.
 
 Usage:
   scripts/bench/lib/analyze-perf.py FILE.jsonl [FILE2.jsonl ...]
@@ -56,6 +57,13 @@ def summarize(records: list[dict]) -> dict:
         r["tokens_per_sec"] for r in records if r.get("tokens_per_sec") is not None
     )
     tokens = [r["out_tokens"] for r in records if r.get("out_tokens") is not None]
+    estimates = [
+        r["estimate_tokens"] for r in records if r.get("estimate_tokens") is not None
+    ]
+    sources: dict[str, int] = {}
+    for r in records:
+        key = str(r.get("usage_source", "?"))
+        sources[key] = sources.get(key, 0) + 1
     return {
         "count": len(records),
         "sse": sum(1 for r in records if r.get("sse")),
@@ -71,8 +79,17 @@ def summarize(records: list[dict]) -> dict:
             "p95": percentile(tps, 95),
         },
         "out_tokens": {"mean": mean(tokens), "p50": percentile(sorted(tokens), 50)},
+        "estimate_tokens": {
+            "mean": mean(estimates),
+            "p50": percentile(sorted(estimates), 50),
+        },
+        "usage_sources": sources,
         "errors": sum(1 for r in records if isinstance(r.get("status"), int) and r["status"] >= 400),
     }
+
+
+def fmt_sources(sources: dict[str, int]) -> str:
+    return " ".join(f"{key}:{value}" for key, value in sorted(sources.items()))
 
 
 def fmt(value: float, digits: int = 0) -> str:
@@ -103,9 +120,9 @@ def main() -> int:
     print("# Live performance (plan §33)\n")
     print(
         "| Mode | Scenario | n | sse | TTFT p50 ms | TTFT p95 ms | Total p50 ms | "
-        "Total p95 ms | tok/s p50 | out tok p50 | errors |"
+        "Total p95 ms | tok/s p50 | out tok p50 | errors | usage src |"
     )
-    print("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
+    print("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|")
     for mode, scenarios in analysis.items():
         for scenario, s in scenarios.items():
             print(
@@ -113,7 +130,7 @@ def main() -> int:
                 f"{fmt(s['ttft_ms']['p50'], 1)} | {fmt(s['ttft_ms']['p95'], 1)} | "
                 f"{fmt(s['total_ms']['p50'], 1)} | {fmt(s['total_ms']['p95'], 1)} | "
                 f"{fmt(s['tokens_per_sec']['p50'], 1)} | {fmt(s['out_tokens']['p50'], 0)} | "
-                f"{s['errors']} |"
+                f"{s['errors']} | {fmt_sources(s['usage_sources'])} |"
             )
 
     out = Path(os.environ.get("PERF_ANALYSIS", "logs/perf-analysis.json"))

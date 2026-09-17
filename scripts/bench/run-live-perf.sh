@@ -18,8 +18,13 @@
 #
 # Usage:
 #   scripts/bench/run-live-perf.sh --mode v2 [--mode v1] [--repeat 3]
-#                                  [--scenario simple|all]
+#                                  [--scenario simple|all] [--usage-probe]
 #                                  [--gpt2giga-url https://host/v1]
+#
+#   --usage-probe  Replay each streamed v1/v2 chat request non-streaming (raw
+#                  http, bypassing the session hooks) to read the upstream
+#                  `usage`; roughly doubles upstream requests, so use it for a
+#                  dedicated usage/`tok/s` reference run, not for latency.
 #
 # Env overrides:
 #   PERF_SOURCE_CONFIG  live opencode.json with connector credentials
@@ -39,6 +44,7 @@ GPT2GIGA_API_KEY="${GPT2GIGA_API_KEY:-}"
 REPEAT=3
 KEEP=0
 SCENARIO="all"
+USAGE_PROBE=0
 declare -a MODES=()
 
 while [[ $# -gt 0 ]]; do
@@ -46,6 +52,7 @@ while [[ $# -gt 0 ]]; do
     --mode) MODES+=("$2"); shift ;;
     --repeat) REPEAT="$2"; shift ;;
     --scenario) SCENARIO="$2"; shift ;;
+    --usage-probe) USAGE_PROBE=1 ;;
     --gpt2giga-url) GPT2GIGA_URL="$2"; shift ;;
     --keep) KEEP=1 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
@@ -179,9 +186,14 @@ fi
 
 run_one() {
   local mode="$1" scenario="$2" repeat="$3"
-  local prompt log
+  local prompt log probe_env=""
   prompt="$(scenario_prompt "$scenario")"
   log="$PERF_ROOT/logs/${mode}-${scenario}-${repeat}.log"
+  # Option 1 (non-streaming usage probe) applies to the connector modes only;
+  # gpt2giga already surfaces usage.
+  if [[ "$USAGE_PROBE" == "1" && ( "$mode" == "v1" || "$mode" == "v2" ) ]]; then
+    probe_env="PERF_USAGE_PROBE=1"
+  fi
   echo ">> [$mode/$scenario #$repeat]"
   set +e
   ( cd "$PERF_ROOT/fixture-pristine" && env \
@@ -190,9 +202,11 @@ run_one() {
       XDG_CACHE_HOME="$PERF_ROOT/cache" \
       XDG_STATE_HOME="$PERF_ROOT/state" \
       NODE_EXTRA_CA_CERTS="$CA_PEM" \
+      PERF_CA_PEM="$CA_PEM" \
       PERF_LOG="$PERF_ROOT/logs/perf-$mode.jsonl" \
       PERF_MODE="$mode" \
       PERF_SCENARIO="$scenario" \
+      ${probe_env:+$probe_env} \
       ${GIGACHAT_CREDENTIALS_VALUE:+GIGACHAT_CREDENTIALS="$GIGACHAT_CREDENTIALS_VALUE"} \
       ${GPT2GIGA_API_KEY:+GPT2GIGA_API_KEY="$GPT2GIGA_API_KEY"} \
       ${PERF_MATCH:+PERF_MATCH="$PERF_MATCH"} \
