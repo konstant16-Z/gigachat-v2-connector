@@ -1,4 +1,11 @@
-# Architecture (Current State)
+# Architecture
+
+> **Статус.** Разделы 1–6 описывают **исходную** архитектуру на момент начала
+> миграции (PHASE 0 / рекогносцировка) и сохранены как исторический baseline.
+> Раздел 7 («Целевая архитектура») **реализован** — V2 pipeline доступен по
+> опции `"v2": true`; см. [`GIGACHAT-V2.md`](GIGACHAT-V2.md) и
+> [`COMPATIBILITY.md`](COMPATIBILITY.md). Номера строк в таблице §2 относятся к
+> исходному срезу и с тех пор сдвинулись.
 
 Документ фиксирует **фактическую архитектуру** `gigachat-v2-connector` на момент начала миграции (PHASE 0 / рекогносцировка). Runtime-изменений на этом этапе не вносилось.
 
@@ -89,14 +96,38 @@ OpenCode 2.x (OpenAI-совместимый поток)
 5. **Нет тестов** (см. BASELINE.md), нет синхронизации `functions_state_id` между запросами (передача только verbatim из запроса в запрос).
 6. `tool_call_id` в не-SSE ответе генерируется заново (`call_<uuid>`) — может расходиться с ожиданиями OpenCode на идентичность id вызова.
 
-## 7. Целевая архитектура (из плана, не реализовано)
+## 7. Архитектура V2 (реализована)
+
+Целевая схема доступна по `options.v2: true`; тонкий `plugin.ts` вызывает
+`createV2Pipeline()`:
 
 ```text
 OpenCode 2.x
-   ↓ OpenCode adapter (тонкий plugin.ts)
+   ↓  http.request
+OpenCode adapter (тонкий plugin.ts)
+   ↓
 Normalized model (src/core)
-   ↓ GigaChat V2 adapter (src/gigachat/v2)
-GigaChat API V2 (SSE)
-   ↓ V2 → Normalized → OpenCode events
+   ↓
+GigaChat V2 adapter (src/gigachat/v2, src/translation)
+   ↓
+GigaChat API V2 (JSON / SSE)
+   ↓  http.response
+V2 → Normalized → OpenCode events
+   ↓
 OpenCode 2.x
 ```
+
+Слои и их модули:
+
+| Слой | Модуль | Ответственность |
+|---|---|---|
+| Адаптер | `src/v2/plugin.ts` | хуки, опции, auth, выбор V1/V2, retry, observability |
+| Композиция | `src/translation/v2-pipeline.ts` | сборка mapping + streaming, сессионный store |
+| Normalized | `src/core/*` | content/tools/request/response/capabilities, нейтральный словарь |
+| V2 wire | `src/gigachat/v2/*` | типы, ошибки, finish_reason, tools (normalize/function/builtin/parallel/state) |
+| Mapping | `src/translation/*` | OpenAI ↔ Normalized ↔ V2 |
+| Streaming | `src/streaming/*` | parser → events → state → OpenAI-чанки + `[DONE]` |
+
+Legacy-путь (`"v2": false`) остаётся нетронутым и служит rollback (plan §37).
+Точки входа, экспортируемая поверхность и данные — те же, что в §2/§4; V2
+добавляет нормализованный слой и сессионное состояние поверх них.
