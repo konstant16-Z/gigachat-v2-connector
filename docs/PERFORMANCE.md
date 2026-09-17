@@ -10,9 +10,9 @@ Split, because the sandbox has no `api.giga.chat` access and no GitHub push:
 
 | Part | Where | Status |
 |------|-------|--------|
-| **A. Mapping overhead** (CPU/time of the translation layers, no network) | reproducible anywhere | measured below |
-| **B. Live latency / tokens·s⁻¹** (real GigaChat, OpenCode, memory/CPU) | terminal with GigaChat access | harness ready, results to fill |
-| **C. gpt2giga comparison** | terminal with the gpt2giga proxy | harness supports it via `--mode gpt2giga` |
+| **A. Mapping overhead** (CPU/time of the translation layers, no network) | reproducible anywhere | measured (below) |
+| **B. Live latency / tokens·s⁻¹** (real GigaChat, OpenCode, memory/CPU) | terminal with GigaChat access | measured 2026-09-17 for v1 + v2 (below); peak RSS to fill |
+| **C. gpt2giga comparison** | terminal with the gpt2giga proxy | not run — needs a running proxy (`--gpt2giga-url`); procedure below |
 
 All four code gates stay green: `npx tsc --noEmit`, `bun test` (314 tests),
 `npx biome check .`, `bun run build`.
@@ -121,38 +121,79 @@ total (falls back to `bytes/4` when the upstream omits usage). Process
 memory/CPU: run the harness under `/usr/bin/time -v` (peak RSS) or sample
 `ps` — record the numbers in the table below.
 
-### Result live-прогона (заполняется на терминале с доступом к GigaChat)
+### Result live-прогона — 2026-09-17
 
-Run date: ____________________  Host: ____________________
-Bun: ______  OpenCode: ______  Model: `gigachat/GigaChat-2-Max`
+Host: WSL2 (Linux 6.18.33.2-microsoft-standard-WSL2 x86_64) ·
+Bun 1.4.2 · Node v22.22.1 · OpenCode v2.0.5 · plugin 2.0.0 ·
+model `gigachat/GigaChat-2-Max` · 3 повтора на сценарий.
 
-| Mode | Scenario | n | TTFT p50/p95 ms | Total p50/p95 ms | tok/s p50 | Peak RSS MB |
-|------|----------|---|-----------------|------------------|-----------|-------------|
-| v1 | simple | | | | | |
-| v2 | simple | | | | | |
-| v1 | large | | | | | |
-| v2 | large | | | | | |
-| v1 | tool | | | | | |
-| v2 | tool | | | | | |
-| v1 | parallel | | | | | |
-| v2 | parallel | | | | | |
-| v1 | long | | | | | |
-| v2 | long | | | | | |
+```bash
+scripts/bench/run-live-perf.sh --mode v2 --mode v1 --repeat 3
+python3 scripts/bench/lib/analyze-perf.py \
+  /tmp/opencode/gigachat-perf/logs/perf-v2.jsonl \
+  /tmp/opencode/gigachat-perf/logs/perf-v1.jsonl
+```
 
-Accepted outcome (plan §33): V2 TTFT/total within noise of V1; if V2 is slower,
-the delta must be attributable to the extra state/mapping work and is accepted.
+`n` в таблице — число перехваченных chat-запросов (агент может сделать больше
+одного на прогон), не число повторов. `out tok` — из `usage` или fallback
+`bytes/4` (апстрим usage не слал, см. [`LONG_SESSION.md`](LONG_SESSION.md)).
+
+| Mode | Scenario | n | sse | TTFT p50 ms | TTFT p95 ms | Total p50 ms | Total p95 ms | tok/s p50 | out tok p50 | errors |
+|------|----------|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| v1 | simple | 6 | 6 | 1201.1 | 5607.0 | 1202.4 | 5607.9 | 88.3 | 121 | 0 |
+| v2 | simple | 6 | 6 | 443.3 | 1381.8 | 445.1 | 1382.8 | 98.6 | 116 | 0 |
+| v1 | large | 6 | 6 | 1627.5 | 2727.0 | 1628.9 | 2727.4 | 96.4 | 123 | 0 |
+| v2 | large | 9 | 9 | 1517.8 | 1839.4 | 1520.9 | 1841.8 | 143.7 | 181 | 0 |
+| v1 | tool | 9 | 9 | 1737.4 | 2432.2 | 1746.3 | 2445.9 | 413.8 | 185 | 0 |
+| v2 | tool | 9 | 9 | 1608.6 | 3436.5 | 1610.1 | 3442.8 | 336.8 | 184 | 0 |
+| v1 | parallel | 15 | 15 | 1112.8 | 1822.7 | 1113.3 | 1824.7 | 135.4 | 122 | 0 |
+| v2 | parallel | 142 | 142 | 2752.9 | 4903.0 | 2753.8 | 4903.8 | 93.2 | 253 | 0 |
+| v1 | long | 6 | 6 | 608.8 | 18700.2 | 610.6 | 18716.7 | 301.3 | 184 | 0 |
+| v2 | long | 6 | 6 | 420.1 | 17539.8 | 423.3 | 18474.9 | 386.1 | 181 | 0 |
+
+#### Чтение
+
+- **V2 в пределах шума V1.** По медианам TTFT/total V2 не медленнее V1 на
+  `simple`/`large`/`tool`/`long` (V2 ниже на simple/long/tool; разница — это
+  разброс апстрима, а не маппинг, см. Part A: единицы µs).
+- **p95 ломают апстрим-столлы, не коннектор.** `long` p95 ≈ 18.7 s у обоих
+  режимов; `simple` v1 p95 5.6 s. Это зависания апстрима на одном из повторов.
+- **`parallel` (v2) не сопоставим.** n=142 против 15 у v1: модель в одном из
+  v2-прогонов вошла в петлю (`v2-parallel-2.log`, 74 KB), вместо параллельных
+  тулов выдавая `execute`-payload. Сценарий параллельных тулов подтверждён
+  отдельно: §26 smoke 05 (3 параллельных `tool_call` → 200) и offline
+  `long-session.test.ts` (2 в одном сообщении).
+- **Один run-level сбой:** `v1/large #2` — OAuth `fetchToken` timeout 10 s
+  (`[GigaCode] [ERROR] Interception translation failed: timeout of 10000ms exceeded`),
+  `exit=1`; запрос не дошёл до capture, поэтому `errors=0`. Сетевой флак общего
+  OAuth-пути (V1/V2), не маппинг.
+- **Peak RSS не снимался** (harness его не пишет); метод — запуск под
+  `/usr/bin/time -v` либо сэмплирование `ps`.
+
+**Вывод (plan §33):** live-медианы V2 ≈ V1; дополнительный state/mapping-слой
+стоит единицы µs (Part A) и не требует искусственной оптимизации latency.
+gpt2giga-колонка не заполнена — см. Part C.
 
 ---
 
 ## C. gpt2giga comparison
 
+**Статус: не выполнен (2026-09-17).** В окружении не было запущенного
+gpt2giga-прокси, а harness требует `--gpt2giga-url` (иначе
+`ERROR: --gpt2giga-url is required for mode gpt2giga`). Это ожидаемо: сравнение
+с gpt2giga — отдельная процедура на стороне пользователя.
+
 Prerequisites (user side): a running gpt2giga proxy with `api.giga.chat`
 credentials; the OpenAI-compatible endpoint exposed (typically `/v1`).
 
 ```bash
+# 1. поднять gpt2giga (отдельный Python-прокси) с кредами GigaChat
+#    и дождаться его OpenAI-совместимого endpoint (обычно :8090/v1)
+
+# 2. тот же harness, тот же capture-плагин и те же 5 сценариев
 scripts/bench/run-live-perf.sh --mode gpt2giga --gpt2giga-url http://127.0.0.1:8090/v1 \
   --repeat 3
-# then compare its column with the v1/v2 columns from Part B
+# 3. сравнить колонку с v1/v2 из Part B (те же Scenario/метрики)
 ```
 
 gpt2giga is a separate Python proxy, so its mapping cost and deployment
@@ -165,7 +206,10 @@ its results next to the Part B table (same columns).
 ## D. Reproduce / evidence
 
 ```text
-A. bun scripts/bench/mapping-bench.ts                    # logs/mapping-bench.json
-B. scripts/bench/run-live-perf.sh --mode v2 --mode v1    # logs/perf-analysis.json
-C. scripts/bench/run-live-perf.sh --mode gpt2giga --gpt2giga-url <url>
+A. bun scripts/bench/mapping-bench.ts                              # logs/mapping-bench.json
+B. scripts/bench/run-live-perf.sh --mode v2 --mode v1 --repeat 3   # logs/perf-{v1,v2}.jsonl + logs/perf-analysis.json
+   # if a later --mode aborts before analysis, aggregate manually:
+   python3 scripts/bench/lib/analyze-perf.py /tmp/opencode/gigachat-perf/logs/perf-v2.jsonl \
+                                               /tmp/opencode/gigachat-perf/logs/perf-v1.jsonl
+C. scripts/bench/run-live-perf.sh --mode gpt2giga --gpt2giga-url <url> --repeat 3   # pending: needs a running proxy
 ```
